@@ -9,11 +9,14 @@ import { directionFromKeys, type Direction, type Vector2 } from '../systems/move
 import {
   carriedLoot,
   createGameState,
+  inExtraction,
   lootInReach,
+  securedLoot,
   PLAYER_SIZE,
   step,
   TICK_SECONDS,
   type Command,
+  type GameOptions,
   type GameState,
 } from '../systems/simulation';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
@@ -36,8 +39,8 @@ const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number
   serverBlock: { width: 26, height: 18, color: 0x5b8fd6 },
 };
 
-// Draw order: world, view cones, loot, people, darkness, noise rings, text.
-const DEPTH = { cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5, hud: 4 } as const;
+// Draw order: world, view cones, loot, people, darkness, noise rings and objective, text.
+const DEPTH = { cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5, hud: 4, endScreen: 5 } as const;
 
 // Guard look per mode: body colour and view cone colour.
 const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
@@ -70,9 +73,16 @@ export class GameScene extends Phaser.Scene {
   private pending: Command[] = [];
   private lastDirection: Direction = { x: 0, y: 0 };
   private accumulator = 0;
+  private options: GameOptions = {};
+  private endScreen: Phaser.GameObjects.Container | null = null;
 
   constructor() {
     super('game');
+  }
+
+  /** Receives the debug spawn switch when the scene restarts. */
+  init(options: GameOptions = {}): void {
+    this.options = options;
   }
 
   preload(): void {
@@ -87,7 +97,15 @@ export class GameScene extends Phaser.Scene {
       throw new Error('Map "testmap" is not loaded');
     }
     this.level = parseLevel(tiled.data);
-    this.state = createGameState(this.level, [LOCAL_PLAYER]);
+    this.state = createGameState(this.level, [LOCAL_PLAYER], this.options);
+    // Phaser reuses the scene object on restart, so per-run fields are reset here.
+    this.lootViews = new Map();
+    this.guardViews = new Map();
+    this.pending = [];
+    this.lastDirection = { x: 0, y: 0 };
+    this.accumulator = 0;
+    this.litFrom = null;
+    this.endScreen = null;
 
     const map = this.make.tilemap({ key: 'testmap' });
     // First argument is the tileset name inside the Tiled file.
@@ -106,6 +124,16 @@ export class GameScene extends Phaser.Scene {
     for (const [id, loot] of Object.entries(this.state.loot)) {
       const look = LOOT_LOOK[loot.kind];
       this.lootViews.set(id, this.add.rectangle(loot.x, loot.y, look.width, look.height, look.color).setDepth(DEPTH.loot));
+    }
+    if (this.level.extraction) {
+      // The objective stays visible above the darkness.
+      const zone = this.level.extraction;
+      this.add
+        .rectangle(zone.x, zone.y, zone.width, zone.height)
+        .setOrigin(0, 0)
+        .setStrokeStyle(2, 0x5fd08a, 0.9)
+        .setFillStyle(0x5fd08a, 0.12)
+        .setDepth(DEPTH.noise);
     }
     for (const [id, guard] of Object.entries(this.state.guards)) {
       this.guardViews.set(id, this.add.circle(guard.x, guard.y, GUARD_SIZE / 2, GUARD_LOOK.patrol.body).setDepth(DEPTH.player));
@@ -145,6 +173,18 @@ export class GameScene extends Phaser.Scene {
       const type = carriedLoot(this.state, LOCAL_PLAYER) ? 'drop' : 'pickUp';
       this.pending.push({ type, playerId: LOCAL_PLAYER });
     });
+    keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-R', () => this.scene.restart(this.options));
+    // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, 0 spawns all.
+    keyboard.on('keydown', (event: KeyboardEvent) => {
+      const kinds = Object.keys(LOOT) as LootKind[];
+      const kind = kinds[Number(event.key) - 1];
+      if (event.key === '0') {
+        this.scene.restart({});
+      } else if (/^[1-9]$/.test(event.key) && kind) {
+        this.scene.restart({ onlyLoot: kind });
+      }
+    });
   }
 
   override update(): void {
@@ -170,6 +210,9 @@ export class GameScene extends Phaser.Scene {
       this.lootViews.get(id)?.setPosition(loot.x, loot.y).setDepth(loot.carriedBy ? DEPTH.player + 0.5 : DEPTH.loot);
     }
     this.drawGuards();
+    if (this.state.outcome && !this.endScreen) {
+      this.showEndScreen();
+    }
     this.hint.setText(this.hintText());
     this.status.setText(this.statusText()).setColor(this.anyGuard('alarm') ? '#ff6b5e' : '#f0c070');
   }
@@ -225,7 +268,53 @@ export class GameScene extends Phaser.Scene {
     return '';
   }
 
+  private showEndScreen(): void {
+    const outcome = this.state.outcome;
+    if (!outcome) {
+      return;
+    }
+    const caught = outcome.result === 'caught';
+    const detail =
+      outcome.result === 'caught'
+        ? 'Eine Wache hat dich erwischt. Die Beute bleibt hier.'
+        : outcome.loot.length > 0
+          ? `Beute: ${outcome.loot.map((kind) => LOOT[kind].name).join(', ')}\nWert: ${formatValue(outcome.value)}`
+          : 'Ohne Beute verschwunden. Wert: 0';
+    const only = this.options.onlyLoot ? `   ·   nur ${LOOT[this.options.onlyLoot].name} (0: alle)` : '';
+    const font = 'Arial, sans-serif';
+    this.endScreen = this.add
+      .container(480, 270, [
+        this.add.rectangle(0, 0, 960, 540, 0x000000, 0.72),
+        this.add
+          .text(0, -50, caught ? 'Geschnappt' : 'Entkommen', {
+            fontFamily: font,
+            fontSize: '44px',
+            fontStyle: 'bold',
+            color: caught ? '#ff6b5e' : '#7ee0a0',
+          })
+          .setOrigin(0.5),
+        this.add
+          .text(0, 20, detail, { fontFamily: font, fontSize: '20px', color: '#e9ece6', align: 'center' })
+          .setOrigin(0.5, 0),
+        this.add
+          .text(0, 110, `R: neu starten${only}`, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' })
+          .setOrigin(0.5, 0),
+      ])
+      .setScrollFactor(0)
+      .setDepth(DEPTH.endScreen);
+  }
+
   private hintText(): string {
+    if (this.state.outcome) {
+      return '';
+    }
+    if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
+      const value = securedLoot(this.state, this.level).reduce((sum, id) => {
+        const loot = this.state.loot[id];
+        return sum + (loot ? LOOT[loot.kind].value : 0);
+      }, 0);
+      return `F: verschwinden   ·   gesichert: ${formatValue(value)}`;
+    }
     const carried = carriedLoot(this.state, LOCAL_PLAYER);
     const carriedKind = carried ? this.state.loot[carried]?.kind : undefined;
     if (carriedKind) {
@@ -297,4 +386,8 @@ function fillPolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], 
     graphics.lineTo(point.x, point.y);
   }
   graphics.closePath().fillPath();
+}
+
+function formatValue(value: number): string {
+  return value.toLocaleString('de-DE');
 }

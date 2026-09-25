@@ -3,13 +3,16 @@ import { LOOT } from './loot';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS } from './noise';
 import {
   applyCommand,
+  CATCH_DISTANCE,
   carriedLoot,
   createGameState,
+  inExtraction,
   lootInReach,
   PICKUP_REACH,
   PLAYER_SIZE,
   PLAYER_SPEED,
   playerModifiers,
+  securedLoot,
   step,
   TICK_SECONDS,
   type Command,
@@ -35,6 +38,7 @@ describe('createGameState', () => {
       loot: {},
       guards: {},
       events: [],
+      outcome: null,
     });
   });
 });
@@ -193,5 +197,69 @@ describe('noise', () => {
     const carrying = step(createGameState(withBlock, ['p1']), [{ type: 'pickUp', playerId: 'p1' }], withBlock);
     const dropped = step(carrying, [{ type: 'drop', playerId: 'p1' }], withBlock);
     expect(dropped.events).toContainEqual({ type: 'noise:emitted', x: 112, y: 80, radius: LOOT.serverBlock.dropNoiseRadius });
+  });
+});
+
+describe('extraction and outcome', () => {
+  // Extraction zone over the left column of the room; two server blocks: one in the zone, one outside.
+  const extractionLevel = {
+    ...level,
+    extraction: { x: 32, y: 32, width: 32, height: 96 },
+    loot: [
+      { id: 'inside', kind: 'serverBlock' as const, x: 48, y: 48 },
+      { id: 'outside', kind: 'serverBlock' as const, x: 144, y: 80 },
+    ],
+  };
+  const extract: Command = { type: 'extract', playerId: 'p1' };
+  const walkLeft = (state: GameState) => {
+    let current = step(state, [move(-1, 0)], extractionLevel);
+    for (let i = 0; i < 60; i++) {
+      current = step(current, [], extractionLevel);
+    }
+    return current;
+  };
+
+  it('ignores extract outside the zone', () => {
+    const state = createGameState(extractionLevel, ['p1']);
+    expect(inExtraction(state, extractionLevel, 'p1')).toBe(false);
+    expect(applyCommand(state, extract, extractionLevel)).toBe(state);
+  });
+
+  it('escapes with the loot lying in the zone plus what the player carries into it', () => {
+    let state = createGameState(extractionLevel, ['p1']);
+    state = step(state, [{ type: 'pickUp', playerId: 'p1' }], extractionLevel); // picks up "outside" in reach
+    expect(carriedLoot(state, 'p1')).toBe('outside');
+    state = walkLeft(state);
+    expect(inExtraction(state, extractionLevel, 'p1')).toBe(true);
+    expect(securedLoot(state, extractionLevel).sort()).toEqual(['inside', 'outside']);
+    const ended = step(state, [extract], extractionLevel);
+    expect(ended.outcome).toEqual({ result: 'escaped', loot: ['serverBlock', 'serverBlock'], value: 2 * LOOT.serverBlock.value });
+  });
+
+  it('can escape empty-handed, worth nothing', () => {
+    const empty = { ...extractionLevel, loot: [] };
+    let state = step(createGameState(empty, ['p1']), [move(-1, 0)], empty);
+    for (let i = 0; i < 60; i++) state = step(state, [], empty);
+    expect(step(state, [extract], empty).outcome).toEqual({ result: 'escaped', loot: [], value: 0 });
+  });
+
+  it('is caught when a guard on alarm reaches the player', () => {
+    const state = createGameState(level, ['p1']);
+    const guard = {
+      kind: 'dockGuard' as const, x: 112 + CATCH_DISTANCE - 1, y: 80, facing: Math.PI, mode: 'alarm' as const,
+      suspicion: 1, routeIndex: 0, path: [], target: null, searchTicks: 0,
+    };
+    const guardLevel = { ...level, guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 150, y: 80 }, { x: 180, y: 80 }], partner: null }] };
+    expect(step({ ...state, guards: { g: guard } }, [], guardLevel).outcome).toEqual({ result: 'caught' });
+  });
+
+  it('freezes the game once the run has ended', () => {
+    const ended = { ...createGameState(level, ['p1']), outcome: { result: 'caught' as const } };
+    expect(step(ended, [move(1, 0)], level)).toBe(ended);
+  });
+
+  it('spawns only one kind of loot when the debug switch asks for it', () => {
+    const mixed = { ...level, loot: [{ id: 'a', kind: 'serverBlock' as const, x: 50, y: 50 }] };
+    expect(Object.keys(createGameState(mixed, ['p1'], { onlyLoot: 'serverBlock' }).loot)).toEqual(['a']);
   });
 });

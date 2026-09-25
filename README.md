@@ -13,11 +13,11 @@ npm test        # Vitest, reine Spiellogik in src/systems
 npm run build   # Typecheck + Produktions-Build nach dist/
 ```
 
-Steuerung: WASD bewegt, E hebt Beute in Reichweite auf oder stellt sie ab.
+Steuerung: WASD bewegt, E hebt Beute in Reichweite auf oder stellt sie ab, F verschwindet aus der grünen Extraktionszone mit aller Beute, die dort liegt oder getragen wird. R startet neu. Debug für den Gate-Test: 1, 2 … starten mit nur einer Beute-Art, 0 wieder mit allen.
 
 ## Maps
 
-Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile im Layer `walls`. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`. Beute ist ein Punkt-Objekt vom Typ `loot` im Layer `objects`, mit der string-Property `kind`, zum Beispiel `serverBlock`. Wachen sind Polylinien vom Typ `guard`: Die Linie ist ihre Patrouillenroute, `kind` nennt den Wachentyp, zum Beispiel `dockGuard`, und `partner` optional den Namen der anderen Wache im Paar. Beleuchtete Bereiche sind Rechtecke im Objekt-Layer `lights` mit der float-Property `brightness` zwischen 0 und 1. Alles außerhalb ist dunkel, und der Spieler sieht dort nur, was in Sichtlinie und nah bei ihm liegt. Geräuschzonen sind Rechtecke im Objekt-Layer `noise`: `surface` über 1 macht Schritte lauter, etwa auf Gitterböden, und `masking` zwischen 0 und 1 schluckt Geräusche, etwa durch Lüfter.
+Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile im Layer `walls`. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`. Beute ist ein Punkt-Objekt vom Typ `loot` im Layer `objects`, mit der string-Property `kind`, zum Beispiel `serverBlock`. Wachen sind Polylinien vom Typ `guard`: Die Linie ist ihre Patrouillenroute, `kind` nennt den Wachentyp, zum Beispiel `dockGuard`, und `partner` optional den Namen der anderen Wache im Paar. Die Extraktion ist ein Rechteck-Objekt vom Typ `extraction`. Beleuchtete Bereiche sind Rechtecke im Objekt-Layer `lights` mit der float-Property `brightness` zwischen 0 und 1. Alles außerhalb ist dunkel, und der Spieler sieht dort nur, was in Sichtlinie und nah bei ihm liegt. Geräuschzonen sind Rechtecke im Objekt-Layer `noise`: `surface` über 1 macht Schritte lauter, etwa auf Gitterböden, und `masking` zwischen 0 und 1 schluckt Geräusche, etwa durch Lüfter.
 
 ## Vor dem Deploy testen
 

@@ -1,7 +1,7 @@
 import { moveAndCollide } from './collision';
 import type { GameEvent } from './events';
 import { createGuards, updateGuards, type GuardState } from './guards';
-import type { Level } from './level';
+import { insideRect, type Level } from './level';
 import { LOOT, type LootKind } from './loot';
 import { computeVelocity, STILL, type Direction, type Vector2 } from './movement';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius } from './noise';
@@ -20,7 +20,15 @@ export interface GameState {
   guards: Record<string, GuardState>;
   /** What happened during the last tick. */
   events: GameEvent[];
+  /** How the run ended, or null while it is still going. Nothing changes after the end. */
+  outcome: Outcome | null;
 }
+
+export type Outcome =
+  /** Players left through the extraction; `loot` lists what they secured. */
+  | { result: 'escaped'; loot: LootKind[]; value: number }
+  /** A guard on alarm reached a player. */
+  | { result: 'caught' };
 
 export interface PlayerState {
   x: number;
@@ -45,7 +53,9 @@ export type Command =
   /** Picks up the nearest loot within reach, if the player carries nothing. */
   | { type: 'pickUp'; playerId: string }
   /** Puts down what the player carries, at the player's feet. */
-  | { type: 'drop'; playerId: string };
+  | { type: 'drop'; playerId: string }
+  /** Ends the run from inside the extraction zone, taking all secured loot. */
+  | { type: 'extract'; playerId: string };
 
 /** What carried loot currently does to a player. */
 export interface Modifiers {
@@ -56,19 +66,28 @@ export interface Modifiers {
 export const PLAYER_SPEED = 160; // px/s
 export const PLAYER_SIZE = 20; // px, below the 32 px tile size so one-tile gaps stay passable
 export const PICKUP_REACH = 36; // px, from the player's centre to the loot's
+export const CATCH_DISTANCE = 22; // px, a guard on alarm this close catches the player
 
 const NO_MODIFIERS: Modifiers = { speedMultiplier: 1, handsFree: true };
 
-export function createGameState(level: Level, playerIds: string[]): GameState {
+export interface GameOptions {
+  /** Debug switch: spawn only loot of this kind, to compare runs with a single target. */
+  onlyLoot?: LootKind;
+}
+
+export function createGameState(level: Level, playerIds: string[], options: GameOptions = {}): GameState {
   const players: Record<string, PlayerState> = {};
   for (const id of playerIds) {
     players[id] = { x: level.spawn.x, y: level.spawn.y, direction: STILL, stepTicks: 0 };
   }
   const loot: Record<string, LootState> = {};
   for (const spawn of level.loot) {
+    if (options.onlyLoot && spawn.kind !== options.onlyLoot) {
+      continue;
+    }
     loot[spawn.id] = { kind: spawn.kind, x: spawn.x, y: spawn.y, carriedBy: null };
   }
-  return { tick: 0, players, loot, guards: createGuards(level), events: [] };
+  return { tick: 0, players, loot, guards: createGuards(level), events: [], outcome: null };
 }
 
 /** Id of the loot the player carries, or null. */
@@ -85,6 +104,25 @@ export function playerModifiers(state: GameState, playerId: string): Modifiers {
   }
   const definition = LOOT[loot.kind];
   return { speedMultiplier: definition.speedMultiplier, handsFree: definition.handsFree };
+}
+
+/**
+ * Loot that leaves when the players extract: lying in the extraction zone, or carried
+ * by a player standing in it.
+ */
+export function securedLoot(state: GameState, level: Level): string[] {
+  const zone = level.extraction;
+  if (!zone) {
+    return [];
+  }
+  return Object.entries(state.loot)
+    .filter(([, loot]) => insideRect(zone, loot))
+    .map(([id]) => id);
+}
+
+export function inExtraction(state: GameState, level: Level, playerId: string): boolean {
+  const player = state.players[playerId];
+  return Boolean(player && level.extraction && insideRect(level.extraction, player));
 }
 
 /** Id of the nearest loot lying within reach of the player, or null. */
@@ -133,6 +171,14 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
         events: [...state.events, { type: 'noise:emitted', x: player.x, y: player.y, radius }],
       };
     }
+    case 'extract': {
+      if (!inExtraction(state, level, command.playerId)) {
+        return state;
+      }
+      const loot = securedLoot(state, level).flatMap((id) => (state.loot[id] ? [state.loot[id].kind] : []));
+      const value = loot.reduce((sum, kind) => sum + LOOT[kind].value, 0);
+      return { ...state, outcome: { result: 'escaped', loot, value } };
+    }
   }
 }
 
@@ -142,6 +188,9 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
  * and to last tick's alerts from their partners.
  */
 export function step(state: GameState, commands: readonly Command[], level: Level): GameState {
+  if (state.outcome) {
+    return state;
+  }
   const commanded = commands.reduce(
     (current, command) => applyCommand(current, command, level),
     { ...state, events: [] as GameEvent[] },
@@ -168,12 +217,19 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
   const partnerAlerts = state.events.filter((event) => event.type === 'guard:alerted');
   const guards = updateGuards(commanded.guards, Object.values(players), level, [...events, ...partnerAlerts]);
 
+  const caught = Object.values(guards.guards).some(
+    (guard) =>
+      guard.mode === 'alarm' &&
+      Object.values(players).some((player) => Math.hypot(player.x - guard.x, player.y - guard.y) <= CATCH_DISTANCE),
+  );
+
   return {
     tick: commanded.tick + 1,
     players,
     loot: followCarriers(commanded.loot, players),
     guards: guards.guards,
     events: [...events, ...guards.events],
+    outcome: commanded.outcome ?? (caught ? { result: 'caught' } : null),
   };
 }
 

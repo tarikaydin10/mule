@@ -134,6 +134,21 @@ describe('parseLevel guards and noise zones', () => {
   });
 });
 
+describe('parseLevel extraction', () => {
+  const withObjects = (objects: object[]): TiledMap => ({
+    ...tiledMap,
+    layers: tiledMap.layers.map((layer) =>
+      layer.name === 'objects' ? { ...layer, objects: [...(layer.objects ?? []), ...objects] } : layer,
+    ) as TiledMap['layers'],
+  });
+
+  it('reads the extraction zone, or null when there is none', () => {
+    const zone = { name: 'van', type: 'extraction', x: 0, y: 32, width: 64, height: 32 };
+    expect(parseLevel(withObjects([zone])).extraction).toEqual({ x: 0, y: 32, width: 64, height: 32 });
+    expect(parseLevel(tiledMap).extraction).toBeNull();
+  });
+});
+
 describe('isSolid', () => {
   it('treats everything outside the map as solid', () => {
     const level = parseLevel(tiledMap);

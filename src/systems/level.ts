@@ -23,6 +23,8 @@ export interface Level {
   loot: LootSpawn[];
   /** Areas that change how far noise carries. */
   noiseZones: NoiseZone[];
+  /** Where players leave the map with their loot, or null in levels without one. */
+  extraction: Rect | null;
   guards: GuardSpawn[];
 }
 
@@ -122,7 +124,29 @@ export function parseLevel(map: TiledMap): Level {
     loot: parseLoot(objects),
     noiseZones: parseNoiseZones(map.layers.find((layer) => layer.name === 'noise' && layer.type === 'objectgroup')),
     guards: parseGuards(objects),
+    extraction: parseExtraction(objects),
   };
+}
+
+/** The rectangle object of type "extraction" in the layer "objects"; at most one. */
+function parseExtraction(objects: TiledObject[]): Rect | null {
+  const zones = objects.filter((obj) => obj.type === 'extraction');
+  if (zones.length > 1) {
+    throw new Error('Only one extraction zone is supported');
+  }
+  const [zone] = zones;
+  if (!zone) {
+    return null;
+  }
+  if (!zone.width || !zone.height) {
+    throw new Error(`Extraction "${zone.name}" needs a size`);
+  }
+  return { x: zone.x, y: zone.y, width: zone.width, height: zone.height };
+}
+
+/** True when the point lies inside the rectangle, edges included. */
+export function insideRect(rect: Rect, point: Vector2): boolean {
+  return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
 }
 
 function property(obj: TiledObject, name: string): unknown {
