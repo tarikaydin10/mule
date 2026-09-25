@@ -69,7 +69,9 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 
 **Detection-Modell:** Wachen reagieren auf `wahrgenommen × verdächtig`, nicht nur auf `wahrgenommen`. Aktuell ist alles verdächtig – aber die Trennung bleibt, damit später Social-Stealth-Maps (öffentliche Räume, Kiste als Tarnung) möglich sind.
 
-**Fairness-Regeln** (Vertrag zwischen Map und Spieler, jede Stufe wird dagegen getestet): sichtbar, bevor gefährlich · Entdeckung dauert auf Distanz mindestens 1 s · Alarm hat einen Ausgang · kein Raum ohne zweiten Ausgang (Ausnahme: Taschen mit Versteck) · jeder Weg für jede Beute, die Map setzt Preise, keine Verbote · Werkzeuge haben Preise · die Welt erklärt sich selbst, kein Tutorial-Text.
+**Fairness-Regeln** (Vertrag zwischen Map und Spieler, jede Stufe wird dagegen getestet): sichtbar, bevor gefährlich · Entdeckung dauert auf Distanz mindestens 1 s · Alarm hat einen Ausgang · kein Raum ohne zweiten Ausgang (Ausnahme: Taschen mit Versteck) · jeder Weg für jede Beute, die Map setzt Preise, keine Verbote · Werkzeuge haben Preise · die Welt erklärt sich selbst: Objekte tragen ihren Namen, Ziele sind markiert, Tasten stehen nur im Briefing und in der Hinweiszeile.
+
+**Demo-Prinzip** (`docs/demo.md`): Das Spiel wird vom ersten Erlebnis her gebaut, nicht von der Raumtabelle. In jeder Sekunde weiß der Spieler, wo er ist, was er will und was er hier tun kann. Erst das Drehbuch der ersten drei Minuten, dann die Map dazu.
 
 ## Tech-Stack
 
@@ -109,6 +111,7 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Die eine Interaktionstaste: Die Szene fragt in dieser Reihenfolge, was `E` gerade tut: Versteck verlassen · Beute aufheben (freie Hände) · Schalter · Versteck betreten · Beute abstellen. Die Simulation prüft jeden Command noch einmal selbst.
 - Schalter machen ein Klack (`SWITCH_NOISE_RADIUS`) in der Welt, wie sie nach dem Schalten klingt: Der Knall des Kompressor-Schalters ist nicht mehr maskiert. Die Szene zeichnet abgeschaltete Lichtzonen dunkel und den Schalter grau.
 - Map-Auswahl: `?map=pier9` (Standard) oder `?map=testmap`. Schilder sind Objekte vom Typ `sign`, ihr Name ist der Text.
+- Affordance (`docs/demo.md`): Die Map trägt ihr Briefing als Map-Property `briefing`; Beuten die string-Property `place` (Ort für das Briefing), Verstecke und Schalter `label` (Name für den Spieler, sonst der Objektname). Die Szene zeigt vor dem Lauf das Briefing mit Lageplan (Kollisionsschicht klein gezeichnet, Du, Van, Ziele), auf Tab die Karte, im Spiel Zielmarker mit Pfeilen am Bildschirmrand und Entfernung, Namen an sichtbaren Objekten und Sätze in der Statuszeile als Antwort auf Ereignisse.
 - Thermal (`src/systems/thermal.ts`): Temperaturen 0–1 stehen in den Daten (Wachentypen, Beuten) bzw. im Zustand (Beute, Wärmespuren). Annahme: Der Anzug des Spielers maskiert Körperwärme (`PLAYER_TEMPERATURE` 0,25), Wärmekameras reagieren ab `THERMAL_DETECTION` 0,5 – sonst sähen sie den Spieler immer und die Kryoprobe-Regel liefe ins Leere. Die Kryoprobe taut ab dem ersten Aufheben auf und geht bei 1 verloren (`loot:lost`). Schritte hinterlassen Restwärme unter der Schwelle.
 - Wärmekameras (`src/systems/sensors.ts`) sehen Spieler, Beute und Spuren über der Schwelle im Kegel mit Wärme-Sichtlinie (nicht durch Glas), nicht aber Wachen; nach etwa 0,5 s gibt es `sensor:alarm`, alle Wachen gehen in Alarm.
 - Wärmebild-Gadget: `thermalVision` im Spielerzustand, Command `toggleThermal` nur mit freien Händen; beidhändige Beute schaltet es aus. Die Szene färbt dann alles in den Grauwert seiner Temperatur und aktiviert den Kamera-Filter (`src/render/`). Texte zeichnet eine zweite Kamera ohne Filter.
@@ -151,11 +154,12 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Beuten: Server-Block und Kryoprobe, beide gleichzeitig auf der Map, je zwei mögliche Plätze pro Lauf, Spieler wählt vor Ort. Dazu Nebenbeute ohne Regel (Frachtpapiere, Zollkasse)
 - Spieler-Verben: Takedown, Wurf, Verstecken, Schalten (siehe oben)
 - Beute-Wert pro Ziel (einfacher Zahlenwert, am Ende angezeigt)
+- Demo-Affordance: Briefing mit Lageplan, Karte, Zielmarker, Namen an Objekten, Statuszeile mit Antworten (`docs/demo.md`)
 - Debug-Schalter: nur eine der beiden Beuten spawnen (nötig, um das Gate sauber zu testen)
 - Gadget: Wärmebild (feste Ausrüstung, keine Auswahl)
 - Systeme: Bewegung, Carry, Light, Noise, Thermal, Guard AI mit Paaren, Extraktion, Fail-State
 
-**Nicht im Umfang:** Briefing-Bildschirm, Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Türen, Sprinten, Verkleidung, Wegtragen von Wachen, Koop, Social Stealth, Waffen außer Takedown.
+**Nicht im Umfang:** Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Türen, Sprinten, Verkleidung, Wegtragen von Wachen, Koop, Social Stealth, Waffen außer Takedown.
 
 **Reihenfolge:**
 1. Projekt-Setup, Command-Layer, Spieler bewegt sich top-down, Kollision mit Wänden, Testmap aus Tiled
@@ -165,4 +169,4 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 5. Thermal-System, Wärmebild-Gadget, Kryoprobe, Wärmekamera (inkl. Glas blockiert Thermal)
 6. Extraktion, Fail-State, Beute-Wert-Anzeige, Debug-Overlay (Geräuschradien, Sichtkegel, Temperaturen), Debug-Schalter für Beuten-Spawn
 
-Schritte 1–6 sind auf der Testmap umgesetzt. Danach Pier 9 in sechs Stufen (`docs/pier9.md`): Rohbau und Netz · Wachen mit Gewohnheiten · Sensorik und Zonen · Verben · Zufall und Feinschliff mit Gate-Test · nach dem Gate: Alarmstufe, hörbare Wachenschritte. Stand: Stufen 1–4 gebaut, Seed und Debug-Fixierung aus Stufe 5 ebenfalls; offen sind Werte und Gate-Test. Die Testmap hat zum Ausprobieren ein Versteck (`crate`) und zwei Schalter neben dem Spawn.
+Schritte 1–6 sind auf der Testmap umgesetzt. Danach Pier 9 in sechs Stufen (`docs/pier9.md`): Rohbau und Netz · Wachen mit Gewohnheiten · Sensorik und Zonen · Verben · Zufall und Feinschliff mit Gate-Test · nach dem Gate: Alarmstufe, hörbare Wachenschritte. Stand: Stufen 1–4 gebaut, Seed und Debug-Fixierung aus Stufe 5 ebenfalls. Vor dem Gate kommt die Demo (`docs/demo.md`): D1 Affordance-Schicht, D2 kompakte Demo-Map aus dem Drehbuch, D3 Feinschliff. Die Testmap hat zum Ausprobieren ein Versteck (`crate`) und zwei Schalter neben dem Spawn.

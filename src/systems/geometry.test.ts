@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clipPolygonToRect } from './geometry';
+import { clipPolygonToRect, pointInPolygon } from './geometry';
 
 const area = (points: { x: number; y: number }[]) =>
   Math.abs(
@@ -45,5 +45,29 @@ describe('clipPolygonToRect', () => {
       { x: 0, y: 10 },
     ];
     expect(area(clipPolygonToRect(lShape, { x: 0, y: 0, width: 10, height: 6 }))).toBeCloseTo(35);
+  });
+});
+
+describe('pointInPolygon', () => {
+  // An L shape: a square with its top-right quarter missing.
+  const shape = [
+    { x: 0, y: 0 },
+    { x: 50, y: 0 },
+    { x: 50, y: 50 },
+    { x: 100, y: 50 },
+    { x: 100, y: 100 },
+    { x: 0, y: 100 },
+  ];
+
+  it('tells inside from outside, including the notch', () => {
+    expect(pointInPolygon({ x: 25, y: 25 }, shape)).toBe(true);
+    expect(pointInPolygon({ x: 75, y: 75 }, shape)).toBe(true);
+    expect(pointInPolygon({ x: 75, y: 25 }, shape)).toBe(false);
+    expect(pointInPolygon({ x: -1, y: 50 }, shape)).toBe(false);
+  });
+
+  it('counts the edge as inside', () => {
+    expect(pointInPolygon({ x: 0, y: 30 }, shape)).toBe(true);
+    expect(pointInPolygon({ x: 50, y: 25 }, shape)).toBe(true);
   });
 });

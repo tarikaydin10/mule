@@ -96,7 +96,7 @@ describe('parseLevel loot', () => {
 
   it('reads loot objects with their kind and a stable id', () => {
     expect(parseLevel(withObjects([block('serverBlock')])).loot).toEqual([
-      { id: 'loot-rack', kind: 'serverBlock', x: 64, y: 16, group: null, variant: 'A' },
+      { id: 'loot-rack', kind: 'serverBlock', x: 64, y: 16, group: null, variant: 'A', place: '' },
     ]);
   });
 
@@ -169,7 +169,8 @@ describe('parseLevel extraction', () => {
 
   it('reads the extraction zone, or null when there is none', () => {
     const zone = { name: 'van', type: 'extraction', x: 0, y: 32, width: 64, height: 32 };
-    expect(parseLevel(withObjects([zone])).extraction).toEqual({ x: 0, y: 32, width: 64, height: 32 });
+    expect(parseLevel(withObjects([zone])).extraction).toEqual({ x: 0, y: 32, width: 64, height: 32, label: 'Ausstieg' });
+    expect(parseLevel(withObjects([{ ...zone, properties: [{ name: 'label', value: 'Van' }] }])).extraction?.label).toBe('Van');
     expect(parseLevel(tiledMap).extraction).toBeNull();
   });
 });
@@ -203,13 +204,13 @@ describe('parseLevel objects of the second Pier 9 version', () => {
   it('reads loot groups and variants, defaulting to no group and variant A', () => {
     const level = parseLevel(
       withObjects([
-        { id: 1, name: 'block_a', type: 'loot', x: 10, y: 10, properties: [prop('kind', 'serverBlock'), prop('group', 'block'), prop('variant', 'A')] },
+        { id: 1, name: 'block_a', type: 'loot', x: 10, y: 10, properties: [prop('kind', 'serverBlock'), prop('group', 'block'), prop('variant', 'A'), prop('place', 'Büro')] },
         { id: 2, name: 'papers', type: 'loot', x: 20, y: 20, width: 16, height: 16, properties: [prop('kind', 'papers')] },
       ]),
     );
     expect(level.loot).toEqual([
-      { id: 'loot-block_a', kind: 'serverBlock', x: 10, y: 10, group: 'block', variant: 'A' },
-      { id: 'loot-papers', kind: 'papers', x: 28, y: 28, group: null, variant: 'A' },
+      { id: 'loot-block_a', kind: 'serverBlock', x: 10, y: 10, group: 'block', variant: 'A', place: 'Büro' },
+      { id: 'loot-papers', kind: 'papers', x: 28, y: 28, group: null, variant: 'A', place: '' },
     ]);
   });
 
@@ -240,12 +241,15 @@ describe('parseLevel objects of the second Pier 9 version', () => {
       withObjects([
         { id: 6, name: 'hall', type: 'guard', x: 0, y: 0, polyline: [{ x: 0, y: 0 }, { x: 32, y: 0 }], properties: [prop('kind', 'dockGuard')] },
         { id: 7, name: 'crate', type: 'hideSpot', x: 32, y: 32, width: 32, height: 32 },
-        { id: 8, name: 'lights', type: 'switch', x: 5, y: 6, properties: [prop('target', 'gallery'), prop('alerts', 'hall')] },
+        { id: 8, name: 'lights', type: 'switch', x: 5, y: 6, properties: [prop('target', 'gallery'), prop('alerts', 'hall'), prop('label', 'Galerielicht')] },
         { id: 9, name: 'Zoll →', type: 'sign', x: 1, y: 2 },
       ]),
     );
-    expect(level.hideSpots).toEqual([{ id: 'hide-crate', name: 'crate', x: 48, y: 48 }]);
-    expect(level.switches).toEqual([{ id: 'switch-lights', name: 'lights', x: 5, y: 6, target: 'gallery', alerts: ['guard-hall'] }]);
+    // Without a label the object's name is what the player reads.
+    expect(level.hideSpots).toEqual([{ id: 'hide-crate', name: 'crate', label: 'crate', x: 48, y: 48 }]);
+    expect(level.switches).toEqual([
+      { id: 'switch-lights', name: 'lights', label: 'Galerielicht', x: 5, y: 6, target: 'gallery', alerts: ['guard-hall'] },
+    ]);
     expect(level.signs).toEqual([{ text: 'Zoll →', x: 1, y: 2 }]);
     expect(() => parseLevel(withObjects([{ id: 8, name: 's', type: 'switch', x: 0, y: 0, properties: [prop('target', 'x'), prop('alerts', 'nobody')] }]))).toThrow('unknown guard');
   });
@@ -259,5 +263,12 @@ describe('isSolid', () => {
     expect(isSolid(level, -1, 0)).toBe(true);
     expect(isSolid(level, 3, 1)).toBe(true);
     expect(isSolid(level, 0, 2)).toBe(true);
+  });
+});
+
+describe('parseLevel briefing', () => {
+  it('reads the briefing from the map properties, empty when there is none', () => {
+    expect(parseLevel(tiledMap).briefing).toBe('');
+    expect(parseLevel({ ...tiledMap, properties: [{ name: 'briefing', value: 'Rein und raus.' }] }).briefing).toBe('Rein und raus.');
   });
 });

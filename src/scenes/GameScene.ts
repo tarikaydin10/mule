@@ -1,10 +1,11 @@
 import * as Phaser from 'phaser';
 import { addThermalFilter, type ThermalFilter } from '../render/ThermalFilter';
 import type { GameEvent } from '../systems/events';
-import { clipPolygonToRect } from '../systems/geometry';
+import { clipPolygonToRect, pointInPolygon } from '../systems/geometry';
 import { DARK_SIGHT, GUARD_SIZE, type GuardMode, type GuardState } from '../systems/guards';
 import { GUARDS } from '../systems/guardTypes';
-import { parseLevel, type Level, type TiledMap } from '../systems/level';
+import { insideRect, parseLevel, type Level, type TiledMap } from '../systems/level';
+import { illuminationAt } from '../systems/lighting';
 import { LOOT, type LootKind } from '../systems/loot';
 import { directionFromKeys, type Direction, type Vector2 } from '../systems/movement';
 import {
@@ -23,10 +24,12 @@ import {
   type Command,
   type GameOptions,
   type GameState,
+  type PlayerState,
 } from '../systems/simulation';
 import { PLAYER_TEMPERATURE, temperatureTint } from '../systems/thermal';
 import { TICK_RATE } from '../systems/tick';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
+import { drawPlan, planLayout, toPlan, type PlanLayout } from './plan';
 
 const LOCAL_PLAYER = 'p1';
 const DEFAULT_MAP = 'pier9';
@@ -77,11 +80,21 @@ const MESSAGE_MS = 3500;
 const DEBUG_NOISE_MS = 1000;
 const DEBUG_FONT = { fontFamily: 'Menlo, Consolas, monospace', fontSize: '11px', color: '#ffffff', backgroundColor: '#000000a0' };
 
+// Affordance: the world names itself and the objectives are always marked (docs/demo.md).
+const FONT = 'Arial, sans-serif';
+const LABEL_NEAR = 130; // px, objects this close are named even in the dark
+const MARKER_MARGIN = 30; // px, arrows to off-screen objectives sit inside this edge
+const EXTRACTION_COLOR = 0x5fd08a;
+const MAP_TITLES: Record<string, string> = { pier9: 'Pier 9', testmap: 'Testmap' };
+const OVERLAY_DEPTH = 10;
+
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
 /** What the scene is started with: the map to load plus the simulation's options. */
 export interface SceneOptions extends GameOptions {
   map?: string;
+  /** Whether the briefing is shown first (default); a quick restart skips it. */
+  briefing?: boolean;
 }
 
 /**
@@ -120,6 +133,18 @@ export class GameScene extends Phaser.Scene {
   private status!: Phaser.GameObjects.Text;
   private message: { text: string; until: number } | null = null;
   private endScreen: Phaser.GameObjects.Container | null = null;
+
+  // Affordance: briefing before the run, map on Tab, names on seen objects, marked objectives.
+  private phase: 'briefing' | 'running' = 'briefing';
+  private briefingView: Phaser.GameObjects.Container | null = null;
+  private mapView: Phaser.GameObjects.Container | null = null;
+  /** What the player currently sees; objects inside it get their name. */
+  private sight: Vector2[] = [];
+  private labels = new Map<string, Phaser.GameObjects.Text>();
+  private markers!: Phaser.GameObjects.Graphics;
+  private markerTexts = new Map<string, Phaser.GameObjects.Text>();
+  private lastCarried: string | null = null;
+  private lastHidden: string | null = null;
 
   private debug = false;
   private debugGraphics!: Phaser.GameObjects.Graphics;
@@ -170,6 +195,13 @@ export class GameScene extends Phaser.Scene {
     this.endScreen = null;
     this.debugLabels = new Map();
     this.recentNoise = [];
+    this.briefingView = null;
+    this.mapView = null;
+    this.sight = [];
+    this.labels = new Map();
+    this.markerTexts = new Map();
+    this.lastCarried = null;
+    this.lastHidden = null;
 
     this.hudCamera = this.cameras.add(0, 0, WIDTH, HEIGHT);
     this.createWorld();
@@ -178,9 +210,18 @@ export class GameScene extends Phaser.Scene {
     this.thermalFilter = addThermalFilter(this.cameras.main);
     this.thermalFilter.setActive(false);
     this.bindKeys();
+    if (this.options.briefing === false) {
+      this.phase = 'running';
+    } else {
+      this.showBriefing();
+    }
   }
 
   override update(): void {
+    // The briefing and the map pause the run: nothing moves while the player reads.
+    if (this.phase === 'briefing' || this.mapView) {
+      return;
+    }
     this.collectInput();
 
     // Wall-clock time, not Phaser's smoothed delta: that one is capped to 60 fps while the
@@ -197,6 +238,7 @@ export class GameScene extends Phaser.Scene {
     if (!player) {
       return;
     }
+    this.noticeChanges(player);
     const thermal = player.thermalVision;
     if (thermal !== this.thermalShown) {
       this.setThermalView(thermal);
@@ -213,6 +255,8 @@ export class GameScene extends Phaser.Scene {
     this.drawGuards(thermal);
     this.drawHeat(thermal);
     this.drawDarkness(player, thermal);
+    this.drawLabels(player, thermal);
+    this.drawMarkers(player);
 
     if (this.state.outcome && !this.endScreen) {
       this.showEndScreen();
@@ -420,11 +464,13 @@ export class GameScene extends Phaser.Scene {
 
     const eraser = this.eraser.clear();
     if (thermal) {
-      erase(eraser, visibilityPolygon(this.level, eye, THERMAL_RANGE, WALL_REVEAL, 'heat'), 1);
+      this.sight = visibilityPolygon(this.level, eye, THERMAL_RANGE, WALL_REVEAL, 'heat');
+      erase(eraser, this.sight, 1);
       this.darkness.clear().fill(0x000000, 1).erase(eraser).render();
       return;
     }
     const sight = visibilityPolygon(this.level, eye, SIGHT_RADIUS, WALL_REVEAL);
+    this.sight = sight;
     // Erasing with alpha a keeps (1 - a) of the darkness; overlapping shapes multiply.
     erase(eraser, sight, 1 - DARKNESS_IN_SIGHT / DARKNESS_OUT_OF_SIGHT);
     erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS, WALL_REVEAL), NEAR_ERASE);
@@ -437,11 +483,20 @@ export class GameScene extends Phaser.Scene {
     this.darkness.clear().fill(0x000000, DARKNESS_OUT_OF_SIGHT).erase(eraser).render();
   }
 
-  /** Noise shows as a ring that spreads to how far it carries; lost loot shows a message. */
+  /** Noise shows as a ring that spreads to how far it carries; everything else answers in a sentence. */
   private showEvents(events: readonly GameEvent[]): void {
     for (const event of events) {
       if (event.type === 'loot:lost') {
-        this.message = { text: 'Die Kryoprobe ist aufgetaut und verloren', until: this.time.now + MESSAGE_MS };
+        this.say('Die Kryoprobe ist aufgetaut und verloren.');
+      }
+      if (event.type === 'switch:used') {
+        const found = this.level.switches.find((s) => s.id === event.switchId);
+        const coming = event.alerts.length;
+        const who = coming === 0 ? '' : coming === 1 ? ' Eine Wache kommt nachsehen.' : ` ${coming} Wachen kommen nachsehen.`;
+        this.say(`${found?.label ?? 'Schalter'} ${event.on ? 'an' : 'aus'}.${who}`);
+      }
+      if (event.type === 'guard:alerted' && event.alarm && this.state.guards[event.guardId]?.mode === 'down') {
+        this.say('Wache am Boden. Wer sie findet, schlägt Alarm.');
       }
       if (event.type !== 'noise:emitted') {
         continue;
@@ -475,13 +530,271 @@ export class GameScene extends Phaser.Scene {
     );
     this.hint = this.hud(
       this.add
-        .text(16, HEIGHT - 16, '', { fontFamily: font, fontSize: '18px', color: '#e9ece6' })
+        .text(16, HEIGHT - 16, '', { fontFamily: font, fontSize: '18px', color: '#e9ece6', wordWrap: { width: WIDTH - 300 } })
         .setOrigin(0, 1)
         .setScrollFactor(0)
         .setShadow(0, 1, '#000000', 3),
     );
+    this.hud(
+      this.add
+        .text(WIDTH - 16, HEIGHT - 16, 'Tab Karte  ·  T Wärmebild  ·  F aussteigen  ·  R neu', { fontFamily: font, fontSize: '13px', color: '#9aa3ac' })
+        .setOrigin(1, 1)
+        .setScrollFactor(0)
+        .setShadow(0, 1, '#000000', 3),
+    );
+    this.markers = this.hud(this.add.graphics()).setScrollFactor(0);
     this.debugGraphics = this.hud(this.add.graphics());
     this.debugInfo = this.hud(this.add.text(8, 8, '', DEBUG_FONT).setScrollFactor(0));
+  }
+
+  // Affordance
+
+  /** Puts a sentence into the status line for a moment. */
+  private say(text: string): void {
+    this.message = { text, until: this.time.now + MESSAGE_MS };
+  }
+
+  /** Picking something up or hiding gets an answer that names the rule. */
+  private noticeChanges(player: PlayerState): void {
+    const carried = carriedLoot(this.state, LOCAL_PLAYER);
+    const kind = carried ? this.state.loot[carried]?.kind : undefined;
+    if (carried && carried !== this.lastCarried && kind) {
+      this.say(`${LOOT[kind].name}: ${lootRule(kind)}.`);
+    }
+    this.lastCarried = carried;
+    if (player.hidden && player.hidden !== this.lastHidden) {
+      this.say('Versteckt. Hier sieht dich keine Wache.');
+    }
+    this.lastHidden = player.hidden;
+  }
+
+  /**
+   * Briefing: the job in three sentences, the targets with place and value, the site plan
+   * with "Du", the targets and the exit, and the keys. Enter starts the run.
+   */
+  private showBriefing(): void {
+    this.phase = 'briefing';
+    const title = MAP_TITLES[this.mapKey] ?? this.mapKey;
+    const items: Phaser.GameObjects.GameObject[] = [this.add.rectangle(0, 0, WIDTH, HEIGHT, 0x0b0d10, 0.96).setOrigin(0)];
+    items.push(this.add.text(48, 36, title.toUpperCase(), { fontFamily: FONT, fontSize: '34px', fontStyle: 'bold', color: '#f0a23b' }));
+    const brief = this.add.text(48, 84, this.level.briefing || 'Kein Briefing für diese Map.', {
+      fontFamily: FONT,
+      fontSize: '17px',
+      color: '#e9ece6',
+      wordWrap: { width: 430 },
+      lineSpacing: 5,
+    });
+    items.push(brief);
+    let y = brief.y + brief.height + 26;
+    const byValue = Object.entries(this.state.loot).sort(([, a], [, b]) => LOOT[b.kind].value - LOOT[a.kind].value);
+    const lists: [string, typeof byValue][] = [
+      ['ZIELE', byValue.filter(([id]) => this.isTarget(id))],
+      ['NEBENBEUTE', byValue.filter(([id]) => !this.isTarget(id))],
+    ];
+    for (const [heading, entries] of lists) {
+      if (entries.length === 0) {
+        continue;
+      }
+      items.push(this.add.text(48, y, heading, { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac' }));
+      y += 24;
+      for (const [id, loot] of entries) {
+        const definition = LOOT[loot.kind];
+        const place = this.level.loot.find((spawn) => spawn.id === id)?.place;
+        items.push(this.add.rectangle(56, y + 10, 12, 12, LOOT_LOOK[loot.kind].color));
+        items.push(
+          this.add.text(72, y, `${definition.name}${place ? `  ·  ${place}` : ''}`, { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#e9ece6' }),
+        );
+        items.push(this.add.text(478, y, formatValue(definition.value), { fontFamily: FONT, fontSize: '17px', color: '#f0a23b' }).setOrigin(1, 0));
+        const rule = this.add.text(72, y + 22, lootRule(loot.kind), { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac', wordWrap: { width: 400 } });
+        items.push(rule);
+        y += 26 + rule.height + 6;
+      }
+      y += 4;
+    }
+    if (this.level.extraction) {
+      items.push(this.add.text(48, y + 2, `Ausstieg: ${this.level.extraction.label}`, { fontFamily: FONT, fontSize: '15px', color: '#7ee0a0' }));
+    }
+    items.push(...this.planItems(planLayout(this.level, { x: 520, y: 48, width: 400, height: 400 })));
+    items.push(
+      this.add
+        .text(WIDTH / 2, HEIGHT - 46, 'WASD laufen  ·  E benutzen  ·  Q Takedown  ·  Leertaste Bolzen  ·  T Wärmebild  ·  Tab Karte  ·  F aussteigen', {
+          fontFamily: FONT,
+          fontSize: '13px',
+          color: '#9aa3ac',
+        })
+        .setOrigin(0.5),
+      this.add.text(WIDTH / 2, HEIGHT - 20, 'Enter: los', { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#f0a23b' }).setOrigin(0.5),
+    );
+    this.briefingView = this.hud(this.add.container(0, 0, items).setScrollFactor(0)).setDepth(OVERLAY_DEPTH);
+  }
+
+  /**
+   * Mission targets get arrows from anywhere; side loot only shows once it is on screen.
+   * Loot in a group is a target; a map without groups makes everything a target.
+   */
+  private isTarget(lootId: string): boolean {
+    const grouped = this.level.loot.filter((spawn) => spawn.group !== null);
+    return grouped.length === 0 || grouped.some((spawn) => spawn.id === lootId);
+  }
+
+  private startRun(): void {
+    this.briefingView?.destroy();
+    this.briefingView = null;
+    this.phase = 'running';
+    this.accumulator = 0;
+  }
+
+  /** The map on Tab: the same plan as in the briefing, with the player where they are now. */
+  private toggleMap(): void {
+    if (this.mapView) {
+      this.mapView.destroy();
+      this.mapView = null;
+      return;
+    }
+    if (this.phase !== 'running' || this.state.outcome) {
+      return;
+    }
+    const items: Phaser.GameObjects.GameObject[] = [
+      this.add.rectangle(0, 0, WIDTH, HEIGHT, 0x0b0d10, 0.92).setOrigin(0),
+      this.add.text(WIDTH / 2, 22, 'KARTE', { fontFamily: FONT, fontSize: '15px', fontStyle: 'bold', color: '#f0a23b' }).setOrigin(0.5),
+      ...this.planItems(planLayout(this.level, { x: 60, y: 48, width: WIDTH - 120, height: HEIGHT - 100 })),
+      this.add.text(WIDTH / 2, HEIGHT - 22, 'Tab: weiter', { fontFamily: FONT, fontSize: '15px', color: '#9aa3ac' }).setOrigin(0.5),
+    ];
+    this.mapView = this.hud(this.add.container(0, 0, items).setScrollFactor(0)).setDepth(OVERLAY_DEPTH);
+  }
+
+  /** The site plan with its markers: loot lying around, the exit, and "Du". */
+  private planItems(layout: PlanLayout): Phaser.GameObjects.GameObject[] {
+    const plan = this.add.graphics();
+    drawPlan(plan, this.level, layout, zonesOff(this.state));
+    const marks = this.add.graphics();
+    const items: Phaser.GameObjects.GameObject[] = [plan, marks];
+    const label = (at: Vector2, text: string, color: string, dy: number) =>
+      items.push(this.add.text(at.x, at.y + dy, text, { fontFamily: FONT, fontSize: '12px', color }).setOrigin(0.5, 1).setShadow(0, 1, '#000000', 3));
+    for (const loot of Object.values(this.state.loot)) {
+      if (loot.carriedBy) {
+        continue;
+      }
+      const at = toPlan(layout, loot);
+      marks.fillStyle(LOOT_LOOK[loot.kind].color, 1).fillCircle(at.x, at.y, 4);
+      label(at, LOOT[loot.kind].name, cssColor(LOOT_LOOK[loot.kind].color), -7);
+    }
+    const zone = this.level.extraction;
+    if (zone) {
+      label(toPlan(layout, { x: zone.x + zone.width / 2, y: zone.y + zone.height / 2 }), zone.label, '#7ee0a0', -4);
+    }
+    const player = this.state.players[LOCAL_PLAYER];
+    if (player) {
+      const at = toPlan(layout, player);
+      marks.fillStyle(0xffffff, 1).fillCircle(at.x, at.y, 4).lineStyle(1, 0xffffff, 0.8).strokeCircle(at.x, at.y, 8);
+      label(at, 'Du', '#ffffff', -11);
+    }
+    return items;
+  }
+
+  /** Names what the player can see: hide spots, switches, cameras and guards. */
+  private drawLabels(player: PlayerState, thermal: boolean): void {
+    const off = zonesOff(this.state);
+    const seen = (at: Vector2) =>
+      Math.hypot(at.x - player.x, at.y - player.y) <= LABEL_NEAR ||
+      (pointInPolygon(at, this.sight) && (thermal || illuminationAt(this.level, at, off) > 0));
+    const wanted = new Map<string, { x: number; y: number; text: string; color: string }>();
+    for (const spot of this.level.hideSpots) {
+      if (seen(spot)) {
+        wanted.set(spot.id, { x: spot.x, y: spot.y - 18, text: `${spot.label} · Versteck`, color: '#b9d6a3' });
+      }
+    }
+    for (const found of this.level.switches) {
+      if (seen(found)) {
+        const on = this.state.zones[found.target] ?? true;
+        wanted.set(found.id, { x: found.x, y: found.y - 12, text: `${found.label} · Schalter${on ? '' : ' · aus'}`, color: '#f0d060' });
+      }
+    }
+    for (const camera of this.level.thermalCameras) {
+      if (seen(camera)) {
+        wanted.set(camera.id, { x: camera.x, y: camera.y - 10, text: 'Wärmekamera', color: '#7fc8e6' });
+      }
+    }
+    for (const [id, guard] of Object.entries(this.state.guards)) {
+      if (seen(guard)) {
+        wanted.set(id, { x: guard.x, y: guard.y - 26, text: guardLabel(guard), color: cssColor(GUARD_LOOK[guard.mode].body) });
+      }
+    }
+    for (const [key, view] of this.labels) {
+      if (!wanted.has(key)) {
+        view.setVisible(false);
+      }
+    }
+    for (const [key, want] of wanted) {
+      const view =
+        this.labels.get(key) ??
+        this.hud(this.add.text(0, 0, '', { fontFamily: FONT, fontSize: '13px', color: '#ffffff' }).setOrigin(0.5, 1).setShadow(0, 1, '#000000', 3));
+      this.labels.set(key, view);
+      view.setPosition(Math.round(want.x), Math.round(want.y)).setText(want.text).setColor(want.color).setVisible(true);
+    }
+  }
+
+  /**
+   * Objectives are always marked: loot lying around and the exit. On screen a mark above the
+   * object; off screen an arrow at the edge with the name and the distance.
+   */
+  private drawMarkers(player: PlayerState): void {
+    const g = this.markers.clear();
+    const camera = this.cameras.main;
+    const zone = this.level.extraction;
+    const targets: { key: string; x: number; y: number; text: string; color: number }[] = [];
+    for (const [id, loot] of Object.entries(this.state.loot)) {
+      if (loot.carriedBy || (zone && insideRect(zone, loot))) {
+        continue;
+      }
+      targets.push({ key: id, x: loot.x, y: loot.y, text: LOOT[loot.kind].name, color: LOOT_LOOK[loot.kind].color });
+    }
+    if (zone && !inExtraction(this.state, this.level, LOCAL_PLAYER)) {
+      targets.push({ key: 'extraction', x: zone.x + zone.width / 2, y: zone.y + zone.height / 2, text: zone.label, color: EXTRACTION_COLOR });
+    }
+    const used = new Set<string>();
+    for (const target of targets) {
+      const sx = target.x - camera.scrollX;
+      const sy = target.y - camera.scrollY;
+      const onScreen = sx >= MARKER_MARGIN && sx <= WIDTH - MARKER_MARGIN && sy >= MARKER_MARGIN && sy <= HEIGHT - MARKER_MARGIN;
+      if (!onScreen && target.key !== 'extraction' && !this.isTarget(target.key)) {
+        continue;
+      }
+      used.add(target.key);
+      const view =
+        this.markerTexts.get(target.key) ??
+        this.hud(this.add.text(0, 0, '', { fontFamily: FONT, fontSize: '14px', fontStyle: 'bold', color: '#ffffff' }).setScrollFactor(0).setShadow(0, 1, '#000000', 4));
+      this.markerTexts.set(target.key, view);
+      let x = sx;
+      let y = sy - 24;
+      if (onScreen) {
+        view.setText(target.text);
+        g.fillStyle(target.color, 0.95).fillTriangle(sx, sy - 13, sx - 5, sy - 21, sx + 5, sy - 21);
+      } else {
+        // Along the line from the screen centre, stopped at the margin; the arrow points on.
+        const dx = sx - WIDTH / 2;
+        const dy = sy - HEIGHT / 2;
+        const k = Math.min(dx !== 0 ? (WIDTH / 2 - MARKER_MARGIN) / Math.abs(dx) : Infinity, dy !== 0 ? (HEIGHT / 2 - MARKER_MARGIN) / Math.abs(dy) : Infinity);
+        const ex = WIDTH / 2 + dx * k;
+        const ey = HEIGHT / 2 + dy * k;
+        const length = Math.hypot(dx, dy) || 1;
+        const ux = dx / length;
+        const uy = dy / length;
+        g.fillStyle(target.color, 1).fillTriangle(ex + ux * 9, ey + uy * 9, ex - ux * 5 - uy * 7, ey - uy * 5 + ux * 7, ex - ux * 5 + uy * 7, ey - uy * 5 - ux * 7);
+        const metres = Math.round(Math.hypot(target.x - player.x, target.y - player.y) / this.level.tileSize);
+        view.setText(`${target.text} · ${metres} m`);
+        // The text sits inward of the arrow, clear of it whatever its length.
+        const pad = 12 + (Math.abs(ux) * view.width) / 2 + (Math.abs(uy) * view.height) / 2;
+        x = Math.min(Math.max(ex - ux * pad, 60), WIDTH - 60);
+        y = Math.min(Math.max(ey - uy * pad, 36), HEIGHT - 44);
+      }
+      view.setOrigin(0.5, onScreen ? 1 : 0.5).setPosition(Math.round(x), Math.round(y)).setColor(cssColor(target.color)).setVisible(true);
+    }
+    for (const [key, view] of this.markerTexts) {
+      if (!used.has(key)) {
+        view.setVisible(false);
+      }
+    }
   }
 
   /**
@@ -660,7 +973,10 @@ export class GameScene extends Phaser.Scene {
         : outcome.loot.length > 0
           ? `Beute: ${outcome.loot.map((kind) => LOOT[kind].name).join(', ')}\nWert: ${formatValue(outcome.value)}`
           : 'Ohne Beute verschwunden. Wert: 0';
-    const only = this.options.onlyLoot ? `   ·   nur ${LOOT[this.options.onlyLoot].name}, fixiert (0: alle)` : '';
+    const seconds = Math.round(this.state.tick / TICK_RATE);
+    const again = this.options.onlyLoot
+      ? `R: nochmal (nur ${LOOT[this.options.onlyLoot].name}, fixiert)   ·   0: alles`
+      : 'R: nochmal   ·   1: nur Server-Block   ·   2: nur Kryoprobe';
     const font = 'Arial, sans-serif';
     this.endScreen = this.hud(
       this.add.container(WIDTH / 2, HEIGHT / 2, [
@@ -674,11 +990,9 @@ export class GameScene extends Phaser.Scene {
           })
           .setOrigin(0.5),
         this.add
-          .text(0, 20, detail, { fontFamily: font, fontSize: '20px', color: '#e9ece6', align: 'center' })
+          .text(0, 20, `${detail}\nZeit: ${seconds} s`, { fontFamily: font, fontSize: '20px', color: '#e9ece6', align: 'center' })
           .setOrigin(0.5, 0),
-        this.add
-          .text(0, 110, `R: neu starten${only}`, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' })
-          .setOrigin(0.5, 0),
+        this.add.text(0, 120, again, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' }).setOrigin(0.5, 0),
       ]).setScrollFactor(0),
     );
   }
@@ -691,18 +1005,27 @@ export class GameScene extends Phaser.Scene {
       throw new Error('Keyboard input is not available');
     }
     this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
+    // Tab must not leave the canvas, Space must not scroll the page.
+    keyboard.addCapture(['TAB', 'SPACE']);
+    keyboard.on('keydown-ENTER', () => {
+      if (this.phase === 'briefing') {
+        this.startRun();
+      }
+    });
+    keyboard.on('keydown-TAB', () => this.toggleMap());
     // E means whatever is in front of the player; the simulation checks it again.
     keyboard.on('keydown-E', () => {
       const interaction = this.interaction();
       if (interaction) {
-        this.pending.push(interaction.command);
+        this.send(interaction.command);
       }
     });
-    keyboard.on('keydown-Q', () => this.pending.push({ type: 'takedown', playerId: LOCAL_PLAYER }));
-    keyboard.on('keydown-SPACE', () => this.pending.push({ type: 'throw', playerId: LOCAL_PLAYER, direction: this.facing }));
-    keyboard.on('keydown-T', () => this.pending.push({ type: 'toggleThermal', playerId: LOCAL_PLAYER }));
-    keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
-    keyboard.on('keydown-R', () => this.scene.restart(this.options));
+    keyboard.on('keydown-Q', () => this.send({ type: 'takedown', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-SPACE', () => this.send({ type: 'throw', playerId: LOCAL_PLAYER, direction: this.facing }));
+    keyboard.on('keydown-T', () => this.send({ type: 'toggleThermal', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-F', () => this.send({ type: 'extract', playerId: LOCAL_PLAYER }));
+    // A quick restart skips the briefing: the plan is known by then.
+    keyboard.on('keydown-R', () => this.scene.restart({ ...this.options, briefing: false }));
     keyboard.on('keydown-O', () => {
       this.debug = !this.debug;
     });
@@ -717,6 +1040,13 @@ export class GameScene extends Phaser.Scene {
         this.scene.restart({ map: this.options.map, onlyLoot: kind, fixed: true });
       }
     });
+  }
+
+  /** Queues a command for the next tick, unless the run is paused for reading. */
+  private send(command: Command): void {
+    if (this.phase === 'running' && !this.mapView) {
+      this.pending.push(command);
+    }
   }
 
   /** Sends a move command only when the direction changes, as a network client would. */
@@ -767,4 +1097,41 @@ function strokePolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[]
 
 function formatValue(value: number): string {
   return value.toLocaleString('de-DE');
+}
+
+/** What carrying this loot does, in the words of the briefing and the status line. */
+function lootRule(kind: LootKind): string {
+  const definition = LOOT[kind];
+  const parts: string[] = [];
+  if (!definition.handsFree) {
+    parts.push('beide Hände: kein Wärmebild, kein Takedown, kein Wurf');
+  }
+  if (definition.speedMultiplier < 1) {
+    parts.push(`Tempo ${Math.round(definition.speedMultiplier * 100)} %`);
+  }
+  if (definition.thawPerSecond > 0) {
+    parts.push(`taut nach dem Aufheben auf, nach ${Math.round((1 - definition.temperature) / definition.thawPerSecond)} s verloren`);
+  }
+  if (definition.dropNoiseRadius >= 100) {
+    parts.push('laut beim Abstellen');
+  }
+  return parts.join(', ') || 'leicht, eine Hand';
+}
+
+function guardLabel(guard: GuardState): string {
+  switch (guard.mode) {
+    case 'patrol':
+      return 'Wache';
+    case 'investigate':
+    case 'search':
+      return 'Wache · sucht';
+    case 'alarm':
+      return 'Wache · Alarm';
+    case 'down':
+      return 'Wache · am Boden';
+  }
+}
+
+function cssColor(color: number): string {
+  return `#${color.toString(16).padStart(6, '0')}`;
 }

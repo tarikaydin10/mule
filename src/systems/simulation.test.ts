@@ -233,7 +233,7 @@ describe('extraction and outcome', () => {
   // Extraction zone over the left column of the room; two server blocks: one in the zone, one outside.
   const extractionLevel = {
     ...level,
-    extraction: { x: 32, y: 32, width: 32, height: 96 },
+    extraction: { x: 32, y: 32, width: 32, height: 96, label: 'Van' },
     loot: [
       lootSpawn('inside', 'serverBlock', 48, 48),
       lootSpawn('outside', 'serverBlock', 144, 80),
@@ -401,7 +401,7 @@ describe('thermal', () => {
 
 describe('hiding', () => {
   // A hide spot 30 px right of the spawn, and a guard on alarm right next to it.
-  const spot = { id: 'box', name: 'container', x: 142, y: 80 };
+  const spot = { id: 'box', name: 'container', label: 'Kiste', x: 142, y: 80 };
   const hideLevel = { ...level, hideSpots: [spot], guards: [guardSpawn('g', [{ x: 150, y: 80 }, { x: 180, y: 80 }])] };
   const hide: Command = { type: 'hide', playerId: 'p1' };
   const start = () => createGameState(hideLevel, ['p1']);
@@ -458,8 +458,8 @@ describe('switches', () => {
     lights: [{ name: 'lamp', ...everywhere, brightness: 1 }],
     noiseZones: [{ name: 'fans', ...everywhere, surface: 1, masking: 0.5 }],
     switches: [
-      { id: 'sw-light', name: 'light', x: 142, y: 80, target: 'lamp', alerts: ['g'] },
-      { id: 'sw-fans', name: 'fans', x: 60, y: 80, target: 'fans', alerts: [] },
+      { id: 'sw-light', name: 'light', label: 'Licht', x: 142, y: 80, target: 'lamp', alerts: ['g'] },
+      { id: 'sw-fans', name: 'fans', label: 'Lüfter', x: 60, y: 80, target: 'fans', alerts: [] },
     ],
   };
   const toggle: Command = { type: 'toggleSwitch', playerId: 'p1' };

@@ -143,21 +143,28 @@ const post = (name, [x, y], facing, sweep) =>
   point(name, 'guard', [c(x, y).x, c(x, y).y], [prop('kind', 'dockGuard'), prop('facing', facing), prop('sweep', sweep)]);
 const camera = (name, [x, y], angle, range) =>
   point(name, 'thermalCamera', [c(x, y).x, c(x, y).y], [prop('angle', angle), prop('fov', 70), prop('range', range)]);
-const loot = (name, kind, [x, y], group, variant) =>
-  point(name, 'loot', [c(x, y).x, c(x, y).y], [prop('kind', kind), ...(group ? [prop('group', group), prop('variant', variant)] : [])]);
+const loot = (name, kind, [x, y], place, group, variant) =>
+  point(name, 'loot', [c(x, y).x, c(x, y).y], [
+    prop('kind', kind),
+    prop('place', place),
+    ...(group ? [prop('group', group), prop('variant', variant)] : []),
+  ]);
+const hideSpot = (name, label, [x, y]) => point(name, 'hideSpot', [c(x, y).x, c(x, y).y], [prop('label', label)]);
+const lightSwitch = (name, label, [x, y], target, alerts) =>
+  point(name, 'switch', [c(x, y).x, c(x, y).y], [prop('label', label), prop('target', target), prop('alerts', alerts)]);
 const sign = (text, [x, y]) => point(text, 'sign', [c(x, y).x, c(x, y).y]);
 
 const spawn = c(4, 54);
 const objects = [
   point('player_spawn', '', [spawn.x, spawn.y]),
-  rect('boat', 'extraction', 1, 4, 6, 9),
+  rect('boat', 'extraction', 1, 4, 6, 9, [prop('label', 'Boot')]),
 
-  loot('block_a', 'serverBlock', [94, 34], 'block', 'A'),
-  loot('block_b', 'serverBlock', [25, 22], 'block', 'B'),
-  loot('probe_a', 'cryoSample', [74, 12], 'probe', 'A'),
-  loot('probe_b', 'cryoSample', [73, 41], 'probe', 'B'),
-  loot('papers', 'papers', [88, 30]),
-  loot('cashbox', 'cashbox', [89, 38]),
+  loot('block_a', 'serverBlock', [94, 34], 'Serverraum hinter dem Büro', 'block', 'A'),
+  loot('block_b', 'serverBlock', [25, 22], 'Zollbucht in der Halle', 'block', 'B'),
+  loot('probe_a', 'cryoSample', [74, 12], 'Kühlhaus', 'probe', 'A'),
+  loot('probe_b', 'cryoSample', [73, 41], 'Kühlcontainer im Hof', 'probe', 'B'),
+  loot('papers', 'papers', [88, 30], 'Büro'),
+  loot('cashbox', 'cashbox', [89, 38], 'Torhaus'),
 
   guard('halle_a', [[32, 9], [62, 9], [62, 23], [32, 23]], { partner: 'halle_b', chat: '0,2' }),
   guard('halle_b', [[34, 9], [60, 9], [60, 23], [34, 23]], { partner: 'halle_a', chat: '0,2' }),
@@ -176,12 +183,12 @@ const objects = [
   camera('tor', [86, 45], 180, 280),
   camera('pumpenhaus', [10, 19], 90, 280),
 
-  point('container_1', 'hideSpot', [c(45, 35).x, c(45, 35).y]),
-  point('container_2', 'hideSpot', [c(54, 46).x, c(54, 46).y]),
-  point('kranhaus', 'hideSpot', [c(58, 52).x, c(58, 52).y]),
+  hideSpot('container_1', 'Offener Container', [45, 35]),
+  hideSpot('container_2', 'Offener Container', [54, 46]),
+  hideSpot('kranhaus', 'Kranhaus', [58, 52]),
 
-  point('gallery_lights', 'switch', [c(20, 4).x, c(20, 4).y], [prop('target', 'gallery'), prop('alerts', 'halle_a,halle_b')]),
-  point('compressor', 'switch', [c(67, 11).x, c(67, 11).y], [prop('target', 'coldstore'), prop('alerts', 'halle_a,halle_b')]),
+  lightSwitch('gallery_lights', 'Galerielicht', [20, 4], 'gallery', 'halle_a,halle_b'),
+  lightSwitch('compressor', 'Kompressor', [67, 11], 'coldstore', 'halle_a,halle_b'),
 
   sign('← Kühlhaus', [68, 21]),
   sign('↑ Galerie', [78, 22]),
@@ -225,8 +232,15 @@ for (const obj of objects) {
 // ---------- output ----------
 const layer = (id, name, data) => ({ data, height: H, id, name, opacity: 1, type: 'tilelayer', visible: true, width: W, x: 0, y: 0 });
 const objectLayer = (id, name, objs) => ({ draworder: 'topdown', id, name, objects: objs, opacity: 1, type: 'objectgroup', visible: true, x: 0, y: 0 });
+const briefing = [
+  'Pier 9, Nachtschicht. Im Zoll-Lager warten zwei Lieferungen, die morgen früh weg sind.',
+  'Hol eine davon. Oder beide, wenn du dich traust.',
+  'Rein über die Kaimauer, raus mit dem Boot.',
+].join('\n');
+
 const map = {
   compressionlevel: -1,
+  properties: [prop('briefing', briefing)],
   height: H,
   infinite: false,
   layers: [

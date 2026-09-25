@@ -26,11 +26,13 @@ export interface Level {
   /** Areas that change how far noise carries. */
   noiseZones: NoiseZone[];
   /** Where players leave the map with their loot, or null in levels without one. */
-  extraction: Rect | null;
+  extraction: ExtractionZone | null;
   guards: GuardSpawn[];
   thermalCameras: ThermalCameraSpawn[];
   /** Places a player can hide in: invisible to eyes, not to thermal cameras. */
   hideSpots: HideSpot[];
+  /** Mission text shown before the run; empty when the map has none. */
+  briefing: string;
   /** Switches that turn a named light or noise zone off and on. */
   switches: SwitchSpawn[];
   /** Readable signs, drawn into the world. */
@@ -38,6 +40,11 @@ export interface Level {
 }
 
 /** A fixed thermal camera; it registers heat, not light. */
+export interface ExtractionZone extends Rect {
+  /** What the player reads on it, e.g. "Boot"; "Ausstieg" when the map says nothing. */
+  label: string;
+}
+
 export interface ThermalCameraSpawn {
   id: string;
   x: number;
@@ -83,6 +90,8 @@ export interface LootSpawn {
   /** Spawns sharing a group are alternatives; one of them is chosen per run. Null spawns always. */
   group: string | null;
   variant: string;
+  /** Where it lies, for the briefing (e.g. "Büro Süd"); empty when the map says nothing. */
+  place: string;
 }
 
 export interface LightZone extends Rect {
@@ -94,6 +103,8 @@ export interface LightZone extends Rect {
 export interface HideSpot {
   id: string;
   name: string;
+  /** What the player reads on it. */
+  label: string;
   x: number;
   y: number;
 }
@@ -101,6 +112,8 @@ export interface HideSpot {
 export interface SwitchSpawn {
   id: string;
   name: string;
+  /** What the player reads on it. */
+  label: string;
   x: number;
   y: number;
   /** Name of the light or noise zone it toggles. */
@@ -151,6 +164,7 @@ export interface TiledMap {
   tileheight: number;
   layers: TiledLayer[];
   tilesets: TiledTileset[];
+  properties?: TiledProperty[];
 }
 
 // Tiled stores flip and rotation flags in the top bits of a gid.
@@ -187,6 +201,7 @@ export function parseLevel(map: TiledMap): Level {
     extraction: parseExtraction(objects),
     thermalCameras: parseThermalCameras(objects),
     hideSpots: parseHideSpots(objects),
+    briefing: String(map.properties?.find((p) => p.name === 'briefing')?.value ?? ''),
     switches: parseSwitches(objects, guards),
     signs: objects.filter((obj) => obj.type === 'sign').map((obj) => ({ text: obj.name, x: obj.x, y: obj.y })),
   };
@@ -237,7 +252,7 @@ function parseThermalCameras(objects: TiledObject[]): ThermalCameraSpawn[] {
 }
 
 /** The rectangle object of type "extraction" in the layer "objects"; at most one. */
-function parseExtraction(objects: TiledObject[]): Rect | null {
+function parseExtraction(objects: TiledObject[]): ExtractionZone | null {
   const zones = objects.filter((obj) => obj.type === 'extraction');
   if (zones.length > 1) {
     throw new Error('Only one extraction zone is supported');
@@ -249,7 +264,7 @@ function parseExtraction(objects: TiledObject[]): Rect | null {
   if (!zone.width || !zone.height) {
     throw new Error(`Extraction "${zone.name}" needs a size`);
   }
-  return { x: zone.x, y: zone.y, width: zone.width, height: zone.height };
+  return { x: zone.x, y: zone.y, width: zone.width, height: zone.height, label: stringProperty(zone, 'label') ?? 'Ausstieg' };
 }
 
 /** True when the point lies inside the rectangle, edges included. */
@@ -356,6 +371,7 @@ function parseLoot(objects: TiledObject[]): LootSpawn[] {
         y: point.y,
         group: stringProperty(obj, 'group') ?? null,
         variant: stringProperty(obj, 'variant') ?? 'A',
+        place: stringProperty(obj, 'place') ?? '',
       };
     });
 }
@@ -375,7 +391,12 @@ function parseLights(layer: TiledLayer | undefined): LightZone[] {
 function parseHideSpots(objects: TiledObject[]): HideSpot[] {
   return objects
     .filter((obj) => obj.type === 'hideSpot')
-    .map((obj, index) => ({ id: `hide-${obj.name || obj.id || index}`, name: obj.name, ...centre(obj) }));
+    .map((obj, index) => ({
+      id: `hide-${obj.name || obj.id || index}`,
+      name: obj.name,
+      label: stringProperty(obj, 'label') ?? obj.name,
+      ...centre(obj),
+    }));
 }
 
 /**
@@ -401,7 +422,14 @@ function parseSwitches(objects: TiledObject[], guards: GuardSpawn[]): SwitchSpaw
           }
           return guard.id;
         });
-      return { id: `switch-${obj.name || obj.id || index}`, name: obj.name, ...centre(obj), target, alerts };
+      return {
+        id: `switch-${obj.name || obj.id || index}`,
+        name: obj.name,
+        label: stringProperty(obj, 'label') ?? obj.name,
+        ...centre(obj),
+        target,
+        alerts,
+      };
     });
 }
 

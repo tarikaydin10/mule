@@ -31,6 +31,7 @@ export function levelFromRows(rows: string[], tileSize = 32): Level {
     extraction: null,
     thermalCameras: [],
     hideSpots: [],
+    briefing: '',
     switches: [],
     signs: [],
   };
@@ -43,5 +44,5 @@ export function guardSpawn(id: string, route: Vector2[], extra: Partial<GuardSpa
 
 /** A loot spawn outside any group, so it always spawns. */
 export function lootSpawn(id: string, kind: LootKind, x: number, y: number): LootSpawn {
-  return { id, kind, x, y, group: null, variant: 'A' };
+  return { id, kind, x, y, group: null, variant: 'A', place: '' };
 }

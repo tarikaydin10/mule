@@ -49,3 +49,28 @@ function atX(a: Vector2, b: Vector2, x: number): Vector2 {
 function atY(a: Vector2, b: Vector2, y: number): Vector2 {
   return { x: a.x + ((b.x - a.x) * (y - a.y)) / (b.y - a.y), y };
 }
+
+/** Whether a point lies inside a polygon (even-odd rule); points on an edge count as inside. */
+export function pointInPolygon(point: Vector2, polygon: readonly Vector2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i] as Vector2;
+    const b = polygon[j] as Vector2;
+    if (onSegment(point, a, b)) {
+      return true;
+    }
+    const crosses = a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x;
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function onSegment(p: Vector2, a: Vector2, b: Vector2): boolean {
+  const cross = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+  if (Math.abs(cross) > 1e-6) {
+    return false;
+  }
+  return p.x >= Math.min(a.x, b.x) - 1e-6 && p.x <= Math.max(a.x, b.x) + 1e-6 && p.y >= Math.min(a.y, b.y) - 1e-6 && p.y <= Math.max(a.y, b.y) + 1e-6;
+}

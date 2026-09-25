@@ -2467,6 +2467,11 @@
        "name": "kind",
        "type": "string",
        "value": "serverBlock"
+      },
+      {
+       "name": "place",
+       "type": "string",
+       "value": "Halle"
       }
      ]
     },
@@ -2597,7 +2602,14 @@
      "width": 96,
      "height": 96,
      "rotation": 0,
-     "visible": true
+     "visible": true,
+     "properties": [
+      {
+       "name": "label",
+       "type": "string",
+       "value": "Van"
+      }
+     ]
     },
     {
      "id": 12,
@@ -2615,6 +2627,11 @@
        "name": "kind",
        "type": "string",
        "value": "cryoSample"
+      },
+      {
+       "name": "place",
+       "type": "string",
+       "value": "Lager"
       }
      ]
     },
@@ -2657,7 +2674,14 @@
      "height": 0,
      "point": true,
      "rotation": 0,
-     "visible": true
+     "visible": true,
+     "properties": [
+      {
+       "name": "label",
+       "type": "string",
+       "value": "Kiste"
+      }
+     ]
     },
     {
      "id": 15,
@@ -2680,6 +2704,11 @@
        "name": "alerts",
        "type": "string",
        "value": "dock_upper,dock_lower"
+      },
+      {
+       "name": "label",
+       "type": "string",
+       "value": "Hallenlicht"
       }
      ]
     },
@@ -2699,6 +2728,11 @@
        "name": "target",
        "type": "string",
        "value": "fans"
+      },
+      {
+       "name": "label",
+       "type": "string",
+       "value": "L\u00fcfter"
       }
      ]
     }
@@ -2910,5 +2944,12 @@
  "tilewidth": 32,
  "type": "map",
  "version": "1.10",
- "width": 40
+ "width": 40,
+ "properties": [
+  {
+   "name": "briefing",
+   "type": "string",
+   "value": "Testmap. Ein Server-Block in der Halle, eine Kryoprobe im Lager.\nRaus mit dem Van unten links."
+  }
+ ]
 }
