@@ -27,6 +27,25 @@ describe('parseLevel', () => {
     expect(level).toMatchObject({ width: 3, height: 2, tileSize: 32 });
   });
 
+  it('marks glass tiles, which are solid for movement too', () => {
+    const glassMap: TiledMap = {
+      ...tiledMap,
+      tilesets: [
+        {
+          firstgid: 1,
+          tiles: [
+            { id: 1, properties: [{ name: 'collides', value: true }] },
+            { id: 2, properties: [{ name: 'collides', value: true }, { name: 'glass', value: true }] },
+          ],
+        },
+      ],
+      layers: tiledMap.layers.map((layer) => (layer.name === 'walls' ? { ...layer, data: [2, 3, 0, 0, 0, 0] } : layer)),
+    };
+    const level = parseLevel(glassMap);
+    expect(level.solid.slice(0, 2)).toEqual([true, true]);
+    expect(level.glass.slice(0, 2)).toEqual([false, true]);
+  });
+
   it('reads the player spawn', () => {
     expect(parseLevel(tiledMap).spawn).toEqual({ x: 48, y: 40 });
   });

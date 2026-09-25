@@ -16,6 +16,8 @@ export interface Level {
   tileSize: number;
   /** Row-major, true where a tile blocks movement. */
   solid: boolean[];
+  /** Row-major, true for glass: blocks movement and heat, lets light and sight through. */
+  glass: boolean[];
   spawn: { x: number; y: number };
   /** Lit areas; everywhere else is dark. */
   lights: LightZone[];
@@ -108,7 +110,8 @@ export function parseLevel(map: TiledMap): Level {
   if (!walls?.data) {
     throw new Error('Tile layer "walls" is missing');
   }
-  const colliding = collidingGids(map.tilesets);
+  const colliding = gidsWith(map.tilesets, 'collides');
+  const glassy = gidsWith(map.tilesets, 'glass');
   const objects = map.layers.find((layer) => layer.name === 'objects' && layer.type === 'objectgroup')?.objects ?? [];
   const spawn = objects.find((obj) => obj.name === 'player_spawn');
   if (!spawn) {
@@ -119,6 +122,7 @@ export function parseLevel(map: TiledMap): Level {
     height: map.height,
     tileSize: map.tilewidth,
     solid: walls.data.map((gid) => colliding.has(gid & GID_MASK)),
+    glass: walls.data.map((gid) => glassy.has(gid & GID_MASK)),
     spawn: { x: spawn.x, y: spawn.y },
     lights: parseLights(map.layers.find((layer) => layer.name === 'lights' && layer.type === 'objectgroup')),
     loot: parseLoot(objects),
@@ -218,16 +222,28 @@ function parseLights(layer: TiledLayer | undefined): LightZone[] {
   });
 }
 
-function collidingGids(tilesets: TiledTileset[]): Set<number> {
+/** Gids of tileset tiles whose bool property `name` is true. */
+function gidsWith(tilesets: TiledTileset[], name: string): Set<number> {
   const gids = new Set<number>();
   for (const tileset of tilesets) {
     for (const tile of tileset.tiles ?? []) {
-      if (tile.properties?.some((p) => p.name === 'collides' && p.value === true)) {
+      if (tile.properties?.some((p) => p.name === name && p.value === true)) {
         gids.add(tileset.firstgid + tile.id);
       }
     }
   }
   return gids;
+}
+
+/** What travels along a line of sight: light (normal sight) passes glass, heat does not. */
+export type Sense = 'light' | 'heat';
+
+/** Whether a tile blocks a line of sight for the given sense. Outside the map blocks everything. */
+export function blocksSight(level: Level, column: number, row: number, sense: Sense): boolean {
+  if (!isSolid(level, column, row)) {
+    return false;
+  }
+  return sense === 'heat' || level.glass[row * level.width + column] !== true;
 }
 
 /** Everything outside the map counts as solid. */

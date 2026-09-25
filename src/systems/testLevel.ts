@@ -1,7 +1,7 @@
 import type { Level } from './level';
 
 /**
- * Builds a level from rows of text for tests: '#' is solid, '.' is free.
+ * Builds a level from rows of text for tests: '#' is a wall, 'G' is glass, '.' is free.
  * The spawn is the centre of the tile marked 'P'.
  */
 export function levelFromRows(rows: string[], tileSize = 32): Level {
@@ -14,5 +14,18 @@ export function levelFromRows(rows: string[], tileSize = 32): Level {
       spawn = { x: x * tileSize + tileSize / 2, y: y * tileSize + tileSize / 2 };
     }
   });
-  return { width, height, tileSize, solid: rows.join('').split('').map((c) => c === '#'), spawn, lights: [], loot: [], noiseZones: [], guards: [], extraction: null };
+  const cells = rows.join('').split('');
+  return {
+    width,
+    height,
+    tileSize,
+    solid: cells.map((c) => c === '#' || c === 'G'),
+    glass: cells.map((c) => c === 'G'),
+    spawn,
+    lights: [],
+    loot: [],
+    noiseZones: [],
+    guards: [],
+    extraction: null,
+  };
 }

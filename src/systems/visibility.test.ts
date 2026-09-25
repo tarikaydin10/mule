@@ -99,3 +99,23 @@ describe('normalizeAngle', () => {
     expect(normalizeAngle(-Math.PI * 1.5)).toBeCloseTo(Math.PI / 2);
   });
 });
+
+describe('glass', () => {
+  // A glass pane at tile (3, 1) between the viewer and the far side of the room.
+  const room = levelFromRows(['#######', '#..G..#', '#######']);
+  const viewer = { x: 48, y: 48 };
+
+  it('lets light through, so normal sight sees the far side', () => {
+    expect(castRay(room, viewer, 1, 0, 1000)).toBeCloseTo(144); // the far wall at x 192
+  });
+
+  it('blocks heat, so thermal sight stops at the pane', () => {
+    expect(castRay(room, viewer, 1, 0, 1000, 'heat')).toBeCloseTo(48); // the pane at x 96
+  });
+
+  it('shapes the visible area the same way', () => {
+    const farSide = { x: 150, y: 48 };
+    expect(contains(visibilityPolygon(room, viewer, 1000), farSide)).toBe(true);
+    expect(contains(visibilityPolygon(room, viewer, 1000, 0, 'heat'), farSide)).toBe(false);
+  });
+});
