@@ -623,16 +623,13 @@ export class GameScene extends Phaser.Scene {
     if (this.level.extraction) {
       items.push(this.add.text(48, y + 2, `Ausstieg: ${this.level.extraction.label}`, { fontFamily: FONT, fontSize: '15px', color: '#7ee0a0' }));
     }
-    items.push(...this.planItems(planLayout(this.level, { x: 520, y: 48, width: 400, height: 400 })));
+    // The plan and the keys share the right column, so the list on the left may run long.
+    items.push(...this.planItems(planLayout(this.level, { x: 520, y: 40, width: 400, height: 360 })));
+    const keys = { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac' };
     items.push(
-      this.add
-        .text(WIDTH / 2, HEIGHT - 46, 'WASD laufen  ·  E benutzen  ·  Q Takedown  ·  Leertaste Bolzen  ·  T Wärmebild  ·  Tab Karte  ·  F aussteigen', {
-          fontFamily: FONT,
-          fontSize: '13px',
-          color: '#9aa3ac',
-        })
-        .setOrigin(0.5),
-      this.add.text(WIDTH / 2, HEIGHT - 20, 'Enter: los', { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#f0a23b' }).setOrigin(0.5),
+      this.add.text(720, HEIGHT - 84, 'WASD laufen  ·  E benutzen  ·  Q Takedown  ·  Leertaste Bolzen', keys).setOrigin(0.5),
+      this.add.text(720, HEIGHT - 64, 'T Wärmebild  ·  Tab Karte  ·  F aussteigen', keys).setOrigin(0.5),
+      this.add.text(720, HEIGHT - 30, 'Enter: los', { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#f0a23b' }).setOrigin(0.5),
     );
     this.briefingView = this.hud(this.add.container(0, 0, items).setScrollFactor(0)).setDepth(OVERLAY_DEPTH);
   }

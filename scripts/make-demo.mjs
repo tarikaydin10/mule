@@ -61,8 +61,8 @@ const objects = [
   spawn([8, 33]),
   rect('boat', 'extraction', 2, 30, 4, 35, [prop('label', 'Boot')]),
 
-  loot('block', 'serverBlock', [7, 6], 'Serverraum hinter dem Büro', 'block', 'A'),
-  loot('probe', 'cryoSample', [43, 5], 'Kühlhaus, hinter dem Kompressor', 'probe', 'A'),
+  loot('block', 'serverBlock', [7, 6], 'Serverraum', 'block', 'A'),
+  loot('probe', 'cryoSample', [43, 5], 'Kühlhaus', 'probe', 'A'),
   loot('papers', 'papers', [15, 6], 'Büro'),
   loot('cashbox', 'cashbox', [25, 10], 'Lager'),
 
