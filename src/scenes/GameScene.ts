@@ -10,12 +10,16 @@ import { directionFromKeys, type Direction, type Vector2 } from '../systems/move
 import {
   carriedLoot,
   createGameState,
+  hideSpotInReach,
   inExtraction,
   lootInReach,
   PLAYER_SIZE,
   securedLoot,
   step,
+  switchInReach,
+  takedownTarget,
   TICK_SECONDS,
+  zonesOff,
   type Command,
   type GameOptions,
   type GameState,
@@ -64,6 +68,10 @@ const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
   down: { body: 0x5a5f66, cone: 0x5a5f66 },
 };
 const THERMAL_CAMERA_COLOR = 0x7fc8e6;
+const HIDE_SPOT_COLOR = 0x8fb37a;
+const SWITCH_COLOR = 0xf0d060;
+const SWITCH_OFF_COLOR = 0x6a6a6a;
+const FACING_UP: Direction = { x: 0, y: -1 };
 const NOISE_RING_MS = 450;
 const MESSAGE_MS = 3500;
 const DEBUG_NOISE_MS = 1000;
@@ -90,6 +98,8 @@ export class GameScene extends Phaser.Scene {
   private keys!: WasdKeys;
   private pending: Command[] = [];
   private lastDirection: Direction = { x: 0, y: 0 };
+  /** Last direction the player walked in: where a bolt goes. */
+  private facing: Direction = FACING_UP;
   private accumulator = 0;
 
   private hudCamera!: Phaser.Cameras.Scene2D.Camera;
@@ -99,11 +109,12 @@ export class GameScene extends Phaser.Scene {
   private playerView!: Phaser.GameObjects.Rectangle;
   private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
   private guardViews = new Map<string, Phaser.GameObjects.Arc>();
+  private switchViews = new Map<string, Phaser.GameObjects.Rectangle>();
   private overlay!: Phaser.GameObjects.Graphics;
   private traces!: Phaser.GameObjects.Graphics;
   private darkness!: Phaser.GameObjects.RenderTexture;
   private eraser!: Phaser.GameObjects.Graphics;
-  private litFrom: { x: number; y: number; thermal: boolean } | null = null;
+  private litFrom: { x: number; y: number; thermal: boolean; off: string } | null = null;
 
   private hint!: Phaser.GameObjects.Text;
   private status!: Phaser.GameObjects.Text;
@@ -141,14 +152,19 @@ export class GameScene extends Phaser.Scene {
       throw new Error(`Map "${this.mapKey}" is not loaded`);
     }
     this.level = parseLevel(tiled.data);
-    this.state = createGameState(this.level, [LOCAL_PLAYER], this.options);
+    // Every run draws its own seed unless one is given; a fixed run (debug keys 1, 2) keeps the
+    // simulation's fixed seed, so it takes the first variant of everything.
+    const drawn = this.options.fixed || this.options.seed !== undefined ? {} : { seed: (Math.random() * 0x100000000) >>> 0 };
+    this.state = createGameState(this.level, [LOCAL_PLAYER], { ...this.options, ...drawn });
     // Phaser reuses the scene object on restart, so per-run fields are reset here.
     this.pending = [];
     this.lastDirection = { x: 0, y: 0 };
+    this.facing = FACING_UP;
     this.accumulator = 0;
     this.thermalShown = false;
     this.lootViews = new Map();
     this.guardViews = new Map();
+    this.switchViews = new Map();
     this.litFrom = null;
     this.message = null;
     this.endScreen = null;
@@ -187,7 +203,12 @@ export class GameScene extends Phaser.Scene {
     }
     this.thermalFilter.time = this.time.now / 1000;
 
-    this.playerView.setPosition(player.x, player.y).setFillStyle(thermal ? temperatureTint(PLAYER_TEMPERATURE) : 0xf2f2f2);
+    // Hidden: only a faint outline shows where the player is.
+    this.playerView
+      .setPosition(player.x, player.y)
+      .setFillStyle(thermal ? temperatureTint(PLAYER_TEMPERATURE) : 0xf2f2f2)
+      .setAlpha(player.hidden ? 0.35 : 1);
+    this.drawSwitches();
     this.drawLoot(thermal);
     this.drawGuards(thermal);
     this.drawHeat(thermal);
@@ -241,6 +262,18 @@ export class GameScene extends Phaser.Scene {
     for (const camera of this.level.thermalCameras) {
       this.world(this.add.rectangle(camera.x, camera.y, 10, 10, 0x39424c).setStrokeStyle(1, THERMAL_CAMERA_COLOR)).setDepth(
         DEPTH.player,
+      );
+    }
+    for (const spot of this.level.hideSpots) {
+      // An open container or cabin: a marked square the player can step into.
+      this.world(this.add.rectangle(spot.x, spot.y, 28, 28, HIDE_SPOT_COLOR, 0.25).setStrokeStyle(2, HIDE_SPOT_COLOR, 0.9)).setDepth(
+        DEPTH.loot,
+      );
+    }
+    for (const found of this.level.switches) {
+      this.switchViews.set(
+        found.id,
+        this.world(this.add.rectangle(found.x, found.y, 10, 14, SWITCH_COLOR).setStrokeStyle(1, 0x2a2a2a)).setDepth(DEPTH.loot),
       );
     }
     if (this.level.extraction) {
@@ -317,6 +350,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /** A switch shows the state of its zone: bright while on, grey while off. */
+  private drawSwitches(): void {
+    for (const found of this.level.switches) {
+      const on = this.state.zones[found.target] ?? true;
+      this.switchViews.get(found.id)?.setFillStyle(on ? SWITCH_COLOR : SWITCH_OFF_COLOR);
+    }
+  }
+
   private drawGuards(thermal: boolean): void {
     const overlay = this.overlay.clear();
     for (const [id, guard] of Object.entries(this.state.guards)) {
@@ -369,10 +410,13 @@ export class GameScene extends Phaser.Scene {
    * dark, except what the player can see. Thermal vision: black, except what heat reaches.
    */
   private drawDarkness(eye: Vector2, thermal: boolean): void {
-    if (this.litFrom && this.litFrom.x === eye.x && this.litFrom.y === eye.y && this.litFrom.thermal === thermal) {
+    const off = zonesOff(this.state);
+    const offKey = off.join(',');
+    const lit = this.litFrom;
+    if (lit && lit.x === eye.x && lit.y === eye.y && lit.thermal === thermal && lit.off === offKey) {
       return;
     }
-    this.litFrom = { x: eye.x, y: eye.y, thermal };
+    this.litFrom = { x: eye.x, y: eye.y, thermal, off: offKey };
 
     const eraser = this.eraser.clear();
     if (thermal) {
@@ -386,7 +430,9 @@ export class GameScene extends Phaser.Scene {
     erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS, WALL_REVEAL), NEAR_ERASE);
     erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS * 0.6, WALL_REVEAL), NEAR_ERASE);
     for (const zone of this.level.lights) {
-      erase(eraser, clipPolygonToRect(sight, zone), zone.brightness);
+      if (!off.includes(zone.name)) {
+        erase(eraser, clipPolygonToRect(sight, zone), zone.brightness);
+      }
     }
     this.darkness.clear().fill(0x000000, DARKNESS_OUT_OF_SIGHT).erase(eraser).render();
   }
@@ -457,13 +503,21 @@ export class GameScene extends Phaser.Scene {
     const temp = (value: number) => value.toFixed(2);
 
     if (this.debug) {
+      const off = zonesOff(this.state);
       for (const zone of this.level.lights) {
-        g.lineStyle(1, 0xfff2a0, 0.6).strokeRect(zone.x, zone.y, zone.width, zone.height);
-        label(`light-${zone.name}`, zone.x + zone.width / 2, zone.y + 14, `Licht ${zone.name} ${zone.brightness}`);
+        const isOff = off.includes(zone.name);
+        g.lineStyle(1, 0xfff2a0, isOff ? 0.25 : 0.6).strokeRect(zone.x, zone.y, zone.width, zone.height);
+        label(`light-${zone.name}`, zone.x + zone.width / 2, zone.y + 14, `Licht ${zone.name} ${isOff ? 'AUS' : zone.brightness}`);
       }
       for (const zone of this.level.noiseZones) {
-        g.lineStyle(1, 0xc0a0ff, 0.6).strokeRect(zone.x + 2, zone.y + 2, zone.width - 4, zone.height - 4);
-        label(`noise-${zone.name}`, zone.x + zone.width / 2, zone.y + zone.height - 4, `Geräusch ${zone.name} ×${zone.surface} −${pct(zone.masking)}`);
+        const isOff = off.includes(zone.name);
+        g.lineStyle(1, 0xc0a0ff, isOff ? 0.25 : 0.6).strokeRect(zone.x + 2, zone.y + 2, zone.width - 4, zone.height - 4);
+        label(
+          `noise-${zone.name}`,
+          zone.x + zone.width / 2,
+          zone.y + zone.height - 4,
+          `Geräusch ${zone.name} ${isOff ? 'AUS' : `×${zone.surface} −${pct(zone.masking)}`}`,
+        );
       }
       this.recentNoise = this.recentNoise.filter((noise) => noise.until > this.time.now);
       for (const noise of this.recentNoise) {
@@ -489,7 +543,7 @@ export class GameScene extends Phaser.Scene {
         label(camera.id, camera.x, camera.y - 8, `Wärmekamera ${pct(this.state.cameras[camera.id]?.suspicion ?? 0)}`);
       }
       for (const [id, player] of Object.entries(this.state.players)) {
-        label(id, player.x, player.y - 14, `Spieler ${temp(PLAYER_TEMPERATURE)}`);
+        label(id, player.x, player.y - 14, `Spieler ${temp(PLAYER_TEMPERATURE)}${player.hidden ? ' · versteckt' : ''} · Bolzen ${player.bolts}`);
       }
       for (const [id, loot] of Object.entries(this.state.loot)) {
         label(id, loot.x, loot.y + 22, `${LOOT[loot.kind].name} ${temp(loot.temperature)}`);
@@ -502,7 +556,7 @@ export class GameScene extends Phaser.Scene {
     }
     this.debugInfo.setText(
       this.debug
-        ? `DEBUG (O)   Tick ${this.state.tick} · ${(this.state.tick / TICK_RATE).toFixed(1)} s   ·   Beute-Spawn: 1 Server-Block, 2 Kryoprobe, 0 alle${this.options.onlyLoot ? ` (aktiv: ${LOOT[this.options.onlyLoot].name})` : ''}`
+        ? `DEBUG (O)   Tick ${this.state.tick} · ${(this.state.tick / TICK_RATE).toFixed(1)} s   ·   Seed ${this.state.seed}${this.state.fixed ? ' (fixiert)' : ''}   ·   Beute-Spawn: 1 Server-Block, 2 Kryoprobe, 0 alle${this.options.onlyLoot ? ` (aktiv: ${LOOT[this.options.onlyLoot].name})` : ''}`
         : '',
     );
   }
@@ -524,16 +578,51 @@ export class GameScene extends Phaser.Scene {
     return { text: '', color: '#ffffff' };
   }
 
+  /** What E does right now: the first thing in front of the player, in the order the simulation checks. */
+  private interaction(): { command: Command; text: string } | null {
+    const player = this.state.players[LOCAL_PLAYER];
+    if (!player || this.state.outcome) {
+      return null;
+    }
+    if (player.hidden) {
+      return { command: { type: 'hide', playerId: LOCAL_PLAYER }, text: 'E: Versteck verlassen' };
+    }
+    const carried = carriedLoot(this.state, LOCAL_PLAYER);
+    const reachable = carried ? null : lootInReach(this.state, LOCAL_PLAYER);
+    const reachableKind = reachable ? this.state.loot[reachable]?.kind : undefined;
+    if (reachableKind) {
+      return {
+        command: { type: 'pickUp', playerId: LOCAL_PLAYER },
+        text: `E: ${LOOT[reachableKind].name} aufheben (Wert ${formatValue(LOOT[reachableKind].value)})`,
+      };
+    }
+    const found = switchInReach(this.state, this.level, LOCAL_PLAYER);
+    if (found) {
+      const on = this.state.zones[found.target] ?? true;
+      return {
+        command: { type: 'toggleSwitch', playerId: LOCAL_PLAYER },
+        text: `E: ${found.name.replace(/_/g, ' ')} ${on ? 'ausschalten' : 'einschalten'}`,
+      };
+    }
+    const spot = hideSpotInReach(this.state, this.level, LOCAL_PLAYER);
+    if (spot) {
+      return { command: { type: 'hide', playerId: LOCAL_PLAYER }, text: `E: verstecken (${spot.name.replace(/_/g, ' ')})` };
+    }
+    return carried ? { command: { type: 'drop', playerId: LOCAL_PLAYER }, text: 'E: abstellen' } : null;
+  }
+
   private hintText(): string {
-    if (this.state.outcome) {
+    const player = this.state.players[LOCAL_PLAYER];
+    if (!player || this.state.outcome) {
       return '';
     }
+    const parts: string[] = [];
     if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
       const value = securedLoot(this.state, this.level).reduce((sum, id) => {
         const loot = this.state.loot[id];
         return sum + (loot ? LOOT[loot.kind].value : 0);
       }, 0);
-      return `F: verschwinden   ·   gesichert: ${formatValue(value)}`;
+      parts.push(`F: verschwinden (gesichert: ${formatValue(value)})`);
     }
     const carried = carriedLoot(this.state, LOCAL_PLAYER);
     const carriedState = carried ? this.state.loot[carried] : undefined;
@@ -541,14 +630,22 @@ export class GameScene extends Phaser.Scene {
       const loot = LOOT[carriedState.kind];
       const effects = [
         loot.speedMultiplier < 1 ? 'langsamer' : null,
-        loot.handsFree ? null : 'beide Hände belegt, kein Wärmebild',
+        loot.handsFree ? null : 'beide Hände belegt: kein Wärmebild, kein Wurf, kein Takedown',
         carriedState.thawing ? `${Math.round(carriedState.temperature * 100)} % aufgetaut` : null,
       ].filter(Boolean);
-      return `Trägt: ${loot.name}${effects.length ? ` (${effects.join(', ')})` : ''}   ·   E: abstellen`;
+      parts.push(`Trägt: ${loot.name}${effects.length ? ` (${effects.join(', ')})` : ''}`);
     }
-    const reachable = lootInReach(this.state, LOCAL_PLAYER);
-    const reachableKind = reachable ? this.state.loot[reachable]?.kind : undefined;
-    return reachableKind ? `E: ${LOOT[reachableKind].name} aufheben (Wert ${formatValue(LOOT[reachableKind].value)})` : '';
+    const interaction = this.interaction();
+    if (interaction) {
+      parts.push(interaction.text);
+    }
+    if (takedownTarget(this.state, LOCAL_PLAYER)) {
+      parts.push('Q: Takedown');
+    }
+    if (!player.hidden && player.bolts > 0 && (!carriedState || LOOT[carriedState.kind].handsFree)) {
+      parts.push(`Leertaste: Bolzen werfen (${player.bolts})`);
+    }
+    return parts.join('   ·   ');
   }
 
   private showEndScreen(): void {
@@ -563,7 +660,7 @@ export class GameScene extends Phaser.Scene {
         : outcome.loot.length > 0
           ? `Beute: ${outcome.loot.map((kind) => LOOT[kind].name).join(', ')}\nWert: ${formatValue(outcome.value)}`
           : 'Ohne Beute verschwunden. Wert: 0';
-    const only = this.options.onlyLoot ? `   ·   nur ${LOOT[this.options.onlyLoot].name} (0: alle)` : '';
+    const only = this.options.onlyLoot ? `   ·   nur ${LOOT[this.options.onlyLoot].name}, fixiert (0: alle)` : '';
     const font = 'Arial, sans-serif';
     this.endScreen = this.hud(
       this.add.container(WIDTH / 2, HEIGHT / 2, [
@@ -594,25 +691,30 @@ export class GameScene extends Phaser.Scene {
       throw new Error('Keyboard input is not available');
     }
     this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
-    // E picks up or puts down; the simulation decides whether it is possible.
+    // E means whatever is in front of the player; the simulation checks it again.
     keyboard.on('keydown-E', () => {
-      const type = carriedLoot(this.state, LOCAL_PLAYER) ? 'drop' : 'pickUp';
-      this.pending.push({ type, playerId: LOCAL_PLAYER });
+      const interaction = this.interaction();
+      if (interaction) {
+        this.pending.push(interaction.command);
+      }
     });
+    keyboard.on('keydown-Q', () => this.pending.push({ type: 'takedown', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-SPACE', () => this.pending.push({ type: 'throw', playerId: LOCAL_PLAYER, direction: this.facing }));
     keyboard.on('keydown-T', () => this.pending.push({ type: 'toggleThermal', playerId: LOCAL_PLAYER }));
     keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
     keyboard.on('keydown-R', () => this.scene.restart(this.options));
     keyboard.on('keydown-O', () => {
       this.debug = !this.debug;
     });
-    // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, 0 spawns all.
+    // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, with every random
+    // choice fixed so runs are comparable; 0 spawns all again, with a fresh seed.
     keyboard.on('keydown', (event: KeyboardEvent) => {
       const kinds = Object.keys(LOOT) as LootKind[];
       const kind = kinds[Number(event.key) - 1];
       if (event.key === '0') {
         this.scene.restart({ map: this.options.map });
       } else if (/^[1-9]$/.test(event.key) && kind) {
-        this.scene.restart({ map: this.options.map, onlyLoot: kind });
+        this.scene.restart({ map: this.options.map, onlyLoot: kind, fixed: true });
       }
     });
   }
@@ -628,6 +730,9 @@ export class GameScene extends Phaser.Scene {
     if (direction.x !== this.lastDirection.x || direction.y !== this.lastDirection.y) {
       this.pending.push({ type: 'move', playerId: LOCAL_PLAYER, direction });
       this.lastDirection = direction;
+      if (direction.x !== 0 || direction.y !== 0) {
+        this.facing = direction;
+      }
     }
   }
 }

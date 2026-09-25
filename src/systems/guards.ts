@@ -56,12 +56,16 @@ export interface GuardContext {
   tick: number;
   /** Debug: no random choices, so runs are comparable. */
   fixed: boolean;
+  /** Names of light zones that are switched off; guards see less there. */
+  zonesOff?: readonly string[];
 }
 
 export const GUARD_SIZE = 20; // px
 
-// A target is noticed at arm's length whichever way the guard faces.
+// A target is noticed at arm's length whichever way the guard faces, except straight behind:
+// that blind spot is what a takedown needs.
 const PERIPHERAL_RADIUS = 28;
+const REAR_BLIND_HALF_ANGLE = (3 / 4) * Math.PI;
 // In darkness a guard still sees this share of its full sight range.
 export const DARK_SIGHT = 0.3;
 const SUSPICION_DECAY_PER_SECOND = 0.25;
@@ -117,10 +121,11 @@ function chatKey(spawn: GuardSpawn): string {
 
 /**
  * How strongly a guard perceives a target: 0 when unseen, up to 1 point-blank.
- * The target must be in the view cone (or right next to the guard), in line of sight,
- * and within sight range, which shrinks in the dark. An alert guard looks wider.
+ * The target must be in the view cone (or right next to the guard, but not straight behind),
+ * in line of sight, and within sight range, which shrinks in the dark and with the light
+ * zones in `zonesOff`. An alert guard looks wider.
  */
-export function sightStrength(level: Level, guard: GuardState, target: Vector2): number {
+export function sightStrength(level: Level, guard: GuardState, target: Vector2, zonesOff: readonly string[] = []): number {
   if (guard.mode === 'down') {
     return 0;
   }
@@ -131,19 +136,29 @@ export function sightStrength(level: Level, guard: GuardState, target: Vector2):
   if (distance === 0) {
     return 1;
   }
-  const range = definition.sightRange * (DARK_SIGHT + (1 - DARK_SIGHT) * illuminationAt(level, target));
+  const range = definition.sightRange * (DARK_SIGHT + (1 - DARK_SIGHT) * illuminationAt(level, target, zonesOff));
   if (distance > range) {
     return 0;
   }
-  const fieldOfView = definition.fieldOfView * (guard.alertTicks > 0 ? ALERT_FOV_FACTOR : 1);
-  const offCentre = Math.abs(normalizeAngle(Math.atan2(dy, dx) - guard.facing));
-  if (distance > PERIPHERAL_RADIUS && offCentre > fieldOfView / 2) {
+  const offCentre = offCentreAngle(guard, target);
+  if (distance > PERIPHERAL_RADIUS ? !inViewCone(guard, target) : offCentre > REAR_BLIND_HALF_ANGLE) {
     return 0;
   }
   if (castRay(level, guard, dx / distance, dy / distance, distance) < distance) {
     return 0;
   }
   return Math.max(0.25, 1 - distance / range);
+}
+
+/** Whether the target lies inside the guard's view cone, ignoring distance, light and walls. */
+export function inViewCone(guard: GuardState, target: Vector2): boolean {
+  const fieldOfView = GUARDS[guard.kind].fieldOfView * (guard.alertTicks > 0 ? ALERT_FOV_FACTOR : 1);
+  return offCentreAngle(guard, target) <= fieldOfView / 2;
+}
+
+/** Angle between the guard's facing and the direction to the target, 0 to π. */
+function offCentreAngle(guard: GuardState, target: Vector2): number {
+  return Math.abs(normalizeAngle(Math.atan2(target.y - guard.y, target.x - guard.x) - guard.facing));
 }
 
 /**
@@ -192,7 +207,7 @@ export function updateGuards(
       next[id] = guard;
       continue;
     }
-    const seenBody = bodies.find((body) => body.id !== id && sightStrength(level, guard, body) > 0);
+    const seenBody = bodies.find((body) => body.id !== id && sightStrength(level, guard, body, context.zonesOff) > 0);
     if (seenBody) {
       foundBodies.add(seenBody.id);
     }
@@ -231,7 +246,7 @@ function updateGuard(
   let seenAt: Vector2 | null = null;
   let strongest = 0;
   for (const target of targets) {
-    const perceived = sightStrength(level, state, target) * suspiciousness(target);
+    const perceived = sightStrength(level, state, target, context.zonesOff) * suspiciousness(target);
     if (perceived > strongest) {
       strongest = perceived;
       seenAt = { x: target.x, y: target.y };

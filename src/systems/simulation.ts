@@ -1,8 +1,8 @@
 import { moveAndCollide } from './collision';
 import type { GameEvent } from './events';
-import { createGuards, updateGuards, type GuardContext, type GuardState } from './guards';
+import { createGuards, inViewCone, knockOut, updateGuards, type GuardContext, type GuardState } from './guards';
 import { GUARDS } from './guardTypes';
-import { insideRect, type Level } from './level';
+import { insideRect, type HideSpot, type Level, type SwitchSpawn } from './level';
 import { LOOT, type LootKind } from './loot';
 import { computeVelocity, STILL, type Direction, type Vector2 } from './movement';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius } from './noise';
@@ -10,6 +10,7 @@ import { pick } from './random';
 import { createCameras, updateCameras, type CameraState } from './sensors';
 import { addTrace, coolTraces, PLAYER_TEMPERATURE, type HeatSource, type HeatTrace } from './thermal';
 import { TICK_SECONDS } from './tick';
+import { castRay } from './visibility';
 
 export { TICK_RATE, TICK_SECONDS } from './tick';
 
@@ -30,6 +31,8 @@ export interface GameState {
   cameras: Record<string, CameraState>;
   /** Residual heat of footsteps, fading over time. */
   heatTraces: HeatTrace[];
+  /** Whether each named light or noise zone is on; switches toggle them. */
+  zones: Record<string, boolean>;
   /** What happened during the last tick. */
   events: GameEvent[];
   /** How the run ended, or null while it is still going. Nothing changes after the end. */
@@ -51,6 +54,12 @@ export interface PlayerState {
   stepTicks: number;
   /** Whether the thermal vision gadget is on; it needs free hands. */
   thermalVision: boolean;
+  /** Id of the hide spot the player is in, or null. Hidden players cannot move and are not seen. */
+  hidden: string | null;
+  /** Ticks left before the player can move again after leaving a hide spot. */
+  emergeTicks: number;
+  /** Bolts left to throw this run. */
+  bolts: number;
 }
 
 export interface LootState {
@@ -75,7 +84,15 @@ export type Command =
   /** Ends the run from inside the extraction zone, taking all secured loot. */
   | { type: 'extract'; playerId: string }
   /** Switches the thermal vision gadget on or off; needs free hands. */
-  | { type: 'toggleThermal'; playerId: string };
+  | { type: 'toggleThermal'; playerId: string }
+  /** Enters the hide spot within reach, or leaves the one the player is in. */
+  | { type: 'hide'; playerId: string }
+  /** Flips the switch within reach: its zone goes off or on, with a click the named guards check on. */
+  | { type: 'toggleSwitch'; playerId: string }
+  /** Throws a bolt in the given direction; it lands six tiles away or at the first wall and makes noise. */
+  | { type: 'throw'; playerId: string; direction: Direction }
+  /** Knocks out the guard within reach whose view cone the player is outside of; needs free hands. */
+  | { type: 'takedown'; playerId: string };
 
 /** What carried loot currently does to a player. */
 export interface Modifiers {
@@ -87,6 +104,14 @@ export const PLAYER_SPEED = 160; // px/s
 export const PLAYER_SIZE = 20; // px, below the 32 px tile size so one-tile gaps stay passable
 export const PICKUP_REACH = 36; // px, from the player's centre to the loot's
 export const CATCH_DISTANCE = 22; // px, a guard on alarm this close catches the player
+export const INTERACT_REACH = 36; // px, to a hide spot or switch
+export const TAKEDOWN_REACH = 36; // px, to the guard's centre
+export const HIDE_EXIT_TICKS = 30; // half a second in the open before the player can move again
+export const BOLTS = 3; // per run
+export const THROW_DISTANCE = 192; // px, six tiles
+export const THROW_NOISE_RADIUS = 160; // px, five tiles
+export const SWITCH_NOISE_RADIUS = 120; // px, the click
+export const TAKEDOWN_NOISE_RADIUS = 60; // px, the scuffle
 
 const NO_MODIFIERS: Modifiers = { speedMultiplier: 1, handsFree: true };
 
@@ -105,7 +130,16 @@ export function createGameState(level: Level, playerIds: string[], options: Game
   const context: GuardContext = { seed, tick: 0, fixed };
   const players: Record<string, PlayerState> = {};
   for (const id of playerIds) {
-    players[id] = { x: level.spawn.x, y: level.spawn.y, direction: STILL, stepTicks: 0, thermalVision: false };
+    players[id] = {
+      x: level.spawn.x,
+      y: level.spawn.y,
+      direction: STILL,
+      stepTicks: 0,
+      thermalVision: false,
+      hidden: null,
+      emergeTicks: 0,
+      bolts: BOLTS,
+    };
   }
   const loot: Record<string, LootState> = {};
   for (const spawn of level.loot) {
@@ -124,6 +158,12 @@ export function createGameState(level: Level, playerIds: string[], options: Game
       thawing: false,
     };
   }
+  const zones: Record<string, boolean> = {};
+  for (const zone of [...level.lights, ...level.noiseZones]) {
+    if (zone.name) {
+      zones[zone.name] = true;
+    }
+  }
   return {
     tick: 0,
     seed,
@@ -133,9 +173,15 @@ export function createGameState(level: Level, playerIds: string[], options: Game
     guards: createGuards(level, context),
     cameras: createCameras(level),
     heatTraces: [],
+    zones,
     events: [],
     outcome: null,
   };
+}
+
+/** Names of the zones that are switched off. */
+export function zonesOff(state: GameState): string[] {
+  return Object.keys(state.zones).filter((name) => !state.zones[name]);
 }
 
 /** The variant of a loot group that spawns this run: the first when fixed, else drawn from the seed. */
@@ -214,6 +260,47 @@ export function lootInReach(state: GameState, playerId: string): string | null {
   return nearest;
 }
 
+/** The switch within reach of the player, or null. */
+export function switchInReach(state: GameState, level: Level, playerId: string): SwitchSpawn | null {
+  return nearest(state.players[playerId], level.switches, INTERACT_REACH);
+}
+
+/** The hide spot within reach of the player, or null. */
+export function hideSpotInReach(state: GameState, level: Level, playerId: string): HideSpot | null {
+  return nearest(state.players[playerId], level.hideSpots, INTERACT_REACH);
+}
+
+function nearest<T extends Vector2>(from: Vector2 | undefined, candidates: readonly T[], reach: number): T | null {
+  if (!from) {
+    return null;
+  }
+  let best: T | null = null;
+  let bestDistance = reach;
+  for (const candidate of candidates) {
+    const distance = Math.hypot(candidate.x - from.x, candidate.y - from.y);
+    if (distance <= bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/**
+ * Id of the guard the player could knock out right now: within reach, still standing, and
+ * the player outside its view cone. Needs free hands and no hide spot.
+ */
+export function takedownTarget(state: GameState, playerId: string): string | null {
+  const player = state.players[playerId];
+  if (!player || player.hidden || !playerModifiers(state, playerId).handsFree) {
+    return null;
+  }
+  const standing = Object.entries(state.guards)
+    .filter(([, guard]) => guard.mode !== 'down' && !inViewCone(guard, player))
+    .map(([id, guard]) => ({ id, x: guard.x, y: guard.y }));
+  return nearest(player, standing, TAKEDOWN_REACH)?.id ?? null;
+}
+
 /** Applies one command. Commands that make a sound add a noise event to `state.events`. */
 export function applyCommand(state: GameState, command: Command, level: Level): GameState {
   const player = state.players[command.playerId];
@@ -229,7 +316,7 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
     case 'pickUp': {
       const target = carriedLoot(state, command.playerId) ? null : lootInReach(state, command.playerId);
       const loot = target ? state.loot[target] : undefined;
-      if (!target || !loot) {
+      if (!target || !loot || player.hidden) {
         return state;
       }
       const definition = LOOT[loot.kind];
@@ -247,10 +334,10 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
     case 'drop': {
       const carried = carriedLoot(state, command.playerId);
       const loot = carried ? state.loot[carried] : undefined;
-      if (!carried || !loot) {
+      if (!carried || !loot || player.hidden) {
         return state;
       }
-      const radius = noiseRadius(level, player, LOOT[loot.kind].dropNoiseRadius, 'impact');
+      const radius = noiseRadius(level, player, LOOT[loot.kind].dropNoiseRadius, 'impact', zonesOff(state));
       return {
         ...withLoot(state, carried, { carriedBy: null, x: player.x, y: player.y }),
         events: [...state.events, { type: 'noise:emitted', x: player.x, y: player.y, radius }],
@@ -263,6 +350,62 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
       return {
         ...state,
         players: { ...state.players, [command.playerId]: { ...player, thermalVision: !player.thermalVision } },
+      };
+    }
+    case 'hide': {
+      if (player.hidden) {
+        return withPlayer(state, command.playerId, { hidden: null, emergeTicks: HIDE_EXIT_TICKS });
+      }
+      const spot = hideSpotInReach(state, level, command.playerId);
+      return spot ? withPlayer(state, command.playerId, { hidden: spot.id, x: spot.x, y: spot.y }) : state;
+    }
+    case 'toggleSwitch': {
+      const found = player.hidden ? null : switchInReach(state, level, command.playerId);
+      if (!found) {
+        return state;
+      }
+      const on = !(state.zones[found.target] ?? true);
+      const switched = { ...state, zones: { ...state.zones, [found.target]: on } };
+      // The click carries as the world sounds after the switch: fans that just stopped mask nothing.
+      const radius = noiseRadius(level, found, SWITCH_NOISE_RADIUS, 'impact', zonesOff(switched));
+      return {
+        ...switched,
+        events: [
+          ...state.events,
+          { type: 'switch:used', switchId: found.id, zone: found.target, on, x: found.x, y: found.y, alerts: found.alerts },
+          { type: 'noise:emitted', x: found.x, y: found.y, radius },
+        ],
+      };
+    }
+    case 'throw': {
+      const length = Math.hypot(command.direction.x, command.direction.y);
+      if (player.hidden || player.bolts <= 0 || length === 0 || !playerModifiers(state, command.playerId).handsFree) {
+        return state;
+      }
+      const dx = command.direction.x / length;
+      const dy = command.direction.y / length;
+      const hit = castRay(level, player, dx, dy, THROW_DISTANCE);
+      // A bolt that hits a wall drops just in front of it.
+      const flight = hit < THROW_DISTANCE ? Math.max(0, hit - 4) : THROW_DISTANCE;
+      const landing = { x: player.x + dx * flight, y: player.y + dy * flight };
+      const radius = noiseRadius(level, landing, THROW_NOISE_RADIUS, 'impact', zonesOff(state));
+      return {
+        ...withPlayer(state, command.playerId, { bolts: player.bolts - 1 }),
+        events: [...state.events, { type: 'noise:emitted', ...landing, radius }],
+      };
+    }
+    case 'takedown': {
+      const target = takedownTarget(state, command.playerId);
+      const guard = target ? state.guards[target] : undefined;
+      if (!target || !guard) {
+        return state;
+      }
+      const knocked = knockOut(state.guards, target);
+      const radius = noiseRadius(level, guard, TAKEDOWN_NOISE_RADIUS, 'impact', zonesOff(state));
+      return {
+        ...state,
+        guards: knocked.guards,
+        events: [...state.events, { type: 'noise:emitted', x: guard.x, y: guard.y, radius }, ...(knocked.event ? [knocked.event] : [])],
       };
     }
     case 'extract': {
@@ -290,12 +433,15 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
     { ...state, events: [] as GameEvent[] },
   );
   const events = [...commanded.events];
+  const off = zonesOff(commanded);
   let heatTraces = coolTraces(commanded.heatTraces, TICK_SECONDS);
 
   const players: Record<string, PlayerState> = {};
   for (const [id, player] of Object.entries(commanded.players)) {
     const speed = PLAYER_SPEED * playerModifiers(commanded, id).speedMultiplier;
-    const velocity = computeVelocity(player.direction, speed);
+    // Hidden players stay put, and leaving a hide spot takes a moment.
+    const emergeTicks = Math.max(0, player.emergeTicks - 1);
+    const velocity = computeVelocity(player.hidden || player.emergeTicks > 0 ? STILL : player.direction, speed);
     const position = moveAndCollide(level, player, PLAYER_SIZE / 2, {
       x: velocity.x * TICK_SECONDS,
       y: velocity.y * TICK_SECONDS,
@@ -304,27 +450,29 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
     let stepTicks = moved ? player.stepTicks + 1 : player.stepTicks;
     if (stepTicks >= FOOTSTEP_INTERVAL_TICKS) {
       stepTicks = 0;
-      events.push({ type: 'noise:emitted', ...position, radius: noiseRadius(level, position, FOOTSTEP_RADIUS, 'footstep') });
+      events.push({ type: 'noise:emitted', ...position, radius: noiseRadius(level, position, FOOTSTEP_RADIUS, 'footstep', off) });
       heatTraces = addTrace(heatTraces, position);
     }
-    players[id] = { ...player, ...position, stepTicks };
+    players[id] = { ...player, ...position, stepTicks, emergeTicks };
   }
 
   const loot = thaw(followCarriers(commanded.loot, players), events);
   const cameras = updateCameras(commanded.cameras, intruderHeat({ ...commanded, players, loot, heatTraces }), level);
   events.push(...cameras.events);
 
+  // Hidden players are neither seen nor caught: a hide spot ends every chase.
+  const exposed = Object.values(players).filter((player) => player.hidden === null);
   const partnerAlerts = state.events.filter((event) => event.type === 'guard:alerted');
-  const guards = updateGuards(commanded.guards, Object.values(players), level, [...events, ...partnerAlerts], {
+  const guards = updateGuards(commanded.guards, exposed, level, [...events, ...partnerAlerts], {
     seed: commanded.seed,
     tick: commanded.tick,
     fixed: commanded.fixed,
+    zonesOff: off,
   });
 
   const caught = Object.values(guards.guards).some(
     (guard) =>
-      guard.mode === 'alarm' &&
-      Object.values(players).some((player) => Math.hypot(player.x - guard.x, player.y - guard.y) <= CATCH_DISTANCE),
+      guard.mode === 'alarm' && exposed.some((player) => Math.hypot(player.x - guard.x, player.y - guard.y) <= CATCH_DISTANCE),
   );
 
   return {
@@ -336,6 +484,7 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
     guards: guards.guards,
     cameras: cameras.cameras,
     heatTraces,
+    zones: commanded.zones,
     events: [...events, ...guards.events],
     outcome: commanded.outcome ?? (caught ? { result: 'caught' } : null),
   };
@@ -367,6 +516,11 @@ function thaw(loot: Record<string, LootState>, events: GameEvent[]): Record<stri
     result[id] = { ...item, temperature };
   }
   return result;
+}
+
+function withPlayer(state: GameState, id: string, changes: Partial<PlayerState>): GameState {
+  const player = state.players[id];
+  return player ? { ...state, players: { ...state.players, [id]: { ...player, ...changes } } } : state;
 }
 
 function withLoot(state: GameState, id: string, changes: Partial<LootState>): GameState {

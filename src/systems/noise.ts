@@ -10,10 +10,17 @@ export type NoiseKind = 'footstep' | 'impact';
 /**
  * How far a noise made at `at` carries. The noise zone there scales footsteps by its
  * `surface` factor (loud floors) and every noise by (1 - `masking`) (fans drowning it out).
+ * A zone named in `off` is switched off, like fans that stand still, and changes nothing.
  */
-export function noiseRadius(level: Level, at: Vector2, baseRadius: number, kind: NoiseKind): number {
+export function noiseRadius(
+  level: Level,
+  at: Vector2,
+  baseRadius: number,
+  kind: NoiseKind,
+  off: readonly string[] = [],
+): number {
   const zone = level.noiseZones.find(
-    (z) => at.x >= z.x && at.x <= z.x + z.width && at.y >= z.y && at.y <= z.y + z.height,
+    (z) => !off.includes(z.name) && at.x >= z.x && at.x <= z.x + z.width && at.y >= z.y && at.y <= z.y + z.height,
   );
   if (!zone) {
     return baseRadius;

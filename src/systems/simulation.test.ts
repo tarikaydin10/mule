@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { createGuards } from './guards';
+import { createGuards, inViewCone } from './guards';
 import { LOOT } from './loot';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS } from './noise';
 import { HEAT_TRACE_TEMPERATURE, PLAYER_TEMPERATURE } from './thermal';
 import { TICK_RATE } from './tick';
 import {
   applyCommand,
+  BOLTS,
   CATCH_DISTANCE,
   carriedLoot,
   createGameState,
@@ -15,9 +16,15 @@ import {
   PLAYER_SIZE,
   PLAYER_SPEED,
   heatSources,
+  HIDE_EXIT_TICKS,
+  hideSpotInReach,
   playerModifiers,
   securedLoot,
   step,
+  switchInReach,
+  takedownTarget,
+  THROW_DISTANCE,
+  THROW_NOISE_RADIUS,
   TICK_SECONDS,
   type Command,
   type GameState,
@@ -40,14 +47,26 @@ describe('createGameState', () => {
       tick: 0,
       seed: 0,
       fixed: false,
-      players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0, thermalVision: false } },
+      players: {
+        p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0, thermalVision: false, hidden: null, emergeTicks: 0, bolts: BOLTS },
+      },
       loot: {},
       guards: {},
       cameras: {},
       heatTraces: [],
+      zones: {},
       events: [],
       outcome: null,
     });
+  });
+
+  it('starts every named light and noise zone switched on', () => {
+    const zoned = {
+      ...level,
+      lights: [{ name: 'lamp', x: 0, y: 0, width: 32, height: 32, brightness: 1 }],
+      noiseZones: [{ name: 'fans', x: 0, y: 0, width: 32, height: 32, surface: 1, masking: 0.5 }],
+    };
+    expect(createGameState(zoned, ['p1']).zones).toEqual({ lamp: true, fans: true });
   });
 });
 
@@ -377,5 +396,192 @@ describe('thermal', () => {
     state = { ...state, loot: { probe: { ...(state.loot.probe as NonNullable<typeof state.loot.probe>), temperature: 0.8 } } };
     state = ticks(state, TICK_RATE, camLevel);
     expect(state.guards.g?.mode).toBe('alarm');
+  });
+});
+
+describe('hiding', () => {
+  // A hide spot 30 px right of the spawn, and a guard on alarm right next to it.
+  const spot = { id: 'box', name: 'container', x: 142, y: 80 };
+  const hideLevel = { ...level, hideSpots: [spot], guards: [guardSpawn('g', [{ x: 150, y: 80 }, { x: 180, y: 80 }])] };
+  const hide: Command = { type: 'hide', playerId: 'p1' };
+  const start = () => createGameState(hideLevel, ['p1']);
+
+  it('finds a hide spot within reach', () => {
+    expect(hideSpotInReach(start(), hideLevel, 'p1')).toEqual(spot);
+    expect(hideSpotInReach(start(), { ...hideLevel, hideSpots: [{ ...spot, x: 200 }] }, 'p1')).toBeNull();
+  });
+
+  it('enters the spot, stands still there and is neither seen nor caught', () => {
+    let state = step(start(), [hide, move(1, 0)], hideLevel);
+    expect(state.players.p1).toMatchObject({ hidden: 'box', x: spot.x, y: spot.y });
+    const guard = { ...createGuards(hideLevel).g!, x: spot.x + 10, y: spot.y, facing: Math.PI, mode: 'alarm' as const, suspicion: 1 };
+    state = step({ ...state, guards: { g: guard } }, [], hideLevel);
+    expect(state.players.p1).toMatchObject({ x: spot.x, y: spot.y });
+    expect(state.outcome).toBeNull();
+    expect(state.guards.g?.lostTicks).toBe(1);
+  });
+
+  it('takes half a second in the open before moving again after leaving', () => {
+    let state = step(start(), [hide], hideLevel);
+    state = step(state, [hide, move(1, 0)], hideLevel);
+    expect(state.players.p1?.hidden).toBeNull();
+    expect(state.players.p1?.x).toBe(spot.x);
+    for (let i = 0; i < HIDE_EXIT_TICKS - 1; i++) {
+      state = step(state, [], hideLevel);
+    }
+    expect(state.players.p1?.x).toBe(spot.x);
+    state = step(state, [], hideLevel);
+    expect(state.players.p1?.x).toBeGreaterThan(spot.x);
+  });
+
+  it('takes carried loot along, which thermal cameras still see', () => {
+    const withLoot = { ...hideLevel, loot: [lootSpawn('probe', 'cryoSample', 112, 80)] };
+    let state = step(createGameState(withLoot, ['p1']), [{ type: 'pickUp', playerId: 'p1' }], withLoot);
+    state = step(state, [hide], withLoot);
+    expect(state.loot.probe).toMatchObject({ carriedBy: 'p1', x: spot.x, y: spot.y });
+    expect(state.players.p1?.hidden).toBe('box');
+  });
+
+  it('does not pick up, drop or throw from inside', () => {
+    const withLoot = { ...hideLevel, loot: [lootSpawn('block', 'serverBlock', 142, 80)] };
+    let state = step(createGameState(withLoot, ['p1']), [hide], withLoot);
+    state = step(state, [{ type: 'pickUp', playerId: 'p1' }, { type: 'throw', playerId: 'p1', direction: { x: 1, y: 0 } }], withLoot);
+    expect(state.loot.block?.carriedBy).toBeNull();
+    expect(state.players.p1?.bolts).toBe(BOLTS);
+  });
+});
+
+describe('switches', () => {
+  const everywhere = { x: 0, y: 0, width: 224, height: 160 };
+  const switchLevel = {
+    ...level,
+    lights: [{ name: 'lamp', ...everywhere, brightness: 1 }],
+    noiseZones: [{ name: 'fans', ...everywhere, surface: 1, masking: 0.5 }],
+    switches: [
+      { id: 'sw-light', name: 'light', x: 142, y: 80, target: 'lamp', alerts: ['g'] },
+      { id: 'sw-fans', name: 'fans', x: 60, y: 80, target: 'fans', alerts: [] },
+    ],
+  };
+  const toggle: Command = { type: 'toggleSwitch', playerId: 'p1' };
+
+  it('finds the switch within reach', () => {
+    expect(switchInReach(createGameState(switchLevel, ['p1']), switchLevel, 'p1')?.id).toBe('sw-light');
+  });
+
+  it('switches the zone off and on again, with a click and the alert for the named guards', () => {
+    let state = step(createGameState(switchLevel, ['p1']), [toggle], switchLevel);
+    expect(state.zones).toEqual({ lamp: false, fans: true });
+    expect(state.events).toContainEqual({
+      type: 'switch:used', switchId: 'sw-light', zone: 'lamp', on: false, x: 142, y: 80, alerts: ['g'],
+    });
+    // Masked by the fans still running.
+    expect(state.events).toContainEqual({ type: 'noise:emitted', x: 142, y: 80, radius: 60 });
+    state = step(state, [toggle], switchLevel);
+    expect(state.zones.lamp).toBe(true);
+  });
+
+  it('lets a switched-off noise zone stop masking', () => {
+    let state = step(createGameState(switchLevel, ['p1']), [move(-1, 0)], switchLevel);
+    for (let i = 0; i < 10; i++) {
+      state = step(state, [], switchLevel);
+    }
+    state = step(state, [move(0, 0), toggle], switchLevel);
+    expect(switchInReach(state, switchLevel, 'p1')?.id).toBe('sw-fans');
+    expect(state.zones.fans).toBe(false);
+    // The click of the fan switch itself is no longer masked.
+    expect(state.events).toContainEqual({ type: 'noise:emitted', x: 60, y: 80, radius: 120 });
+    let footstep: { radius: number } | undefined;
+    state = step(state, [move(1, 0)], switchLevel);
+    for (let i = 0; i < FOOTSTEP_INTERVAL_TICKS && !footstep; i++) {
+      state = step(state, [], switchLevel);
+      footstep = state.events.find((e) => e.type === 'noise:emitted');
+    }
+    expect(footstep?.radius).toBe(FOOTSTEP_RADIUS);
+  });
+
+  it('keeps guards from seeing far into a light zone that is off', () => {
+    const guardLevel = { ...switchLevel, guards: [guardSpawn('g', [{ x: 176, y: 112 }, { x: 176, y: 48 }])] };
+    const guard = { ...createGuards(guardLevel).g!, x: 176, y: 80, facing: Math.PI };
+    // The player stands 128 px away: in sight when lit, beyond the dark sight range when not.
+    const start = createGameState(guardLevel, ['p1']);
+    const apart = { ...start, players: { p1: { ...start.players.p1!, x: 48 } }, guards: { g: guard } };
+    expect(step(apart, [], guardLevel).guards.g?.suspicion).toBeGreaterThan(0);
+    expect(step({ ...apart, zones: { lamp: false, fans: true } }, [], guardLevel).guards.g?.suspicion).toBe(0);
+  });
+});
+
+describe('throwing', () => {
+  const throwRight: Command = { type: 'throw', playerId: 'p1', direction: { x: 1, y: 0 } };
+  // Room wide enough for a full throw to the right of the spawn.
+  const wide = levelFromRows(['#############', '#P...........#', '#############']);
+
+  it('lands six tiles away and makes noise there, spending a bolt', () => {
+    const state = step(createGameState(wide, ['p1']), [throwRight], wide);
+    expect(state.players.p1?.bolts).toBe(BOLTS - 1);
+    expect(state.events).toContainEqual({ type: 'noise:emitted', x: 48 + THROW_DISTANCE, y: 48, radius: THROW_NOISE_RADIUS });
+  });
+
+  it('drops in front of the first wall', () => {
+    const state = step(createGameState(level, ['p1']), [throwRight], level);
+    const noise = state.events.find((e) => e.type === 'noise:emitted');
+    // The east wall starts at x = 192.
+    expect(noise?.x).toBeGreaterThan(150);
+    expect(noise?.x).toBeLessThan(192);
+  });
+
+  it('runs out after the last bolt, and needs free hands', () => {
+    let state = createGameState(wide, ['p1']);
+    for (let i = 0; i < BOLTS + 1; i++) {
+      state = step(state, [throwRight], wide);
+    }
+    expect(state.players.p1?.bolts).toBe(0);
+    expect(state.events).toEqual([]);
+    const withBlock = { ...wide, loot: [lootSpawn('block', 'serverBlock', 48, 48)] };
+    const carrying = step(createGameState(withBlock, ['p1']), [{ type: 'pickUp', playerId: 'p1' }], withBlock);
+    expect(step(carrying, [throwRight], withBlock).players.p1?.bolts).toBe(BOLTS);
+  });
+
+  it('draws the nearest guard to the landing spot', () => {
+    const guardLevel = { ...wide, guards: [guardSpawn('g', [{ x: 368, y: 48 }, { x: 336, y: 48 }])] };
+    const state = step(createGameState(guardLevel, ['p1']), [throwRight], guardLevel);
+    expect(state.guards.g?.mode).toBe('investigate');
+    expect(state.guards.g?.target).toEqual({ x: 48 + THROW_DISTANCE, y: 48 });
+  });
+});
+
+describe('takedown', () => {
+  const takedown: Command = { type: 'takedown', playerId: 'p1' };
+  const pairLevel = {
+    ...level,
+    guards: [
+      guardSpawn('a', [{ x: 140, y: 80 }, { x: 180, y: 80 }], { partner: 'b' }),
+      guardSpawn('b', [{ x: 180, y: 112 }, { x: 140, y: 112 }], { partner: 'a' }),
+    ],
+  };
+  // Guard a stands 28 px right of the spawn; facing right, its back is to the player.
+  const withGuard = (facing: number) => {
+    const state = createGameState(pairLevel, ['p1']);
+    return { ...state, guards: { ...state.guards, a: { ...state.guards.a!, x: 140, facing } } };
+  };
+
+  it('targets a guard within reach only from outside its view cone', () => {
+    expect(takedownTarget(withGuard(0), 'p1')).toBe('a');
+    expect(inViewCone(withGuard(Math.PI).guards.a!, { x: 112, y: 80 })).toBe(true);
+    expect(takedownTarget(withGuard(Math.PI), 'p1')).toBeNull();
+  });
+
+  it('puts the guard down, alarms its partner and makes a small noise', () => {
+    const state = step(withGuard(0), [takedown], pairLevel);
+    expect(state.guards.a?.mode).toBe('down');
+    expect(state.guards.b?.mode).toBe('alarm');
+    expect(state.events).toContainEqual({ type: 'noise:emitted', x: 140, y: 80, radius: 60 });
+    expect(takedownTarget(state, 'p1')).toBeNull();
+  });
+
+  it('needs free hands', () => {
+    const withBlock = { ...pairLevel, loot: [lootSpawn('block', 'serverBlock', 112, 80)] };
+    const carrying = step({ ...withGuard(0), loot: createGameState(withBlock, ['p1']).loot }, [{ type: 'pickUp', playerId: 'p1' }], withBlock);
+    expect(carriedLoot(carrying, 'p1')).toBe('block');
+    expect(takedownTarget(carrying, 'p1')).toBeNull();
   });
 });

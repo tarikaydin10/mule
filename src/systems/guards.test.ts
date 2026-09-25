@@ -4,6 +4,7 @@ import {
   ALERT_SECONDS,
   CHAT_SECONDS,
   createGuards,
+  inViewCone,
   knockOut,
   LOST_SECONDS,
   sightStrength,
@@ -103,9 +104,19 @@ describe('sightStrength', () => {
     expect(far).toBeGreaterThan(0);
   });
 
-  it('does not see behind itself, except right next to it', () => {
+  it('does not see behind itself, but notices what stands right beside it', () => {
     expect(sightStrength(hall(), at(200, 176), { x: 100, y: 176 })).toBe(0);
-    expect(sightStrength(hall(), at(200, 176), { x: 180, y: 176 })).toBeGreaterThan(0);
+    expect(sightStrength(hall(), at(200, 176), { x: 200, y: 196 })).toBeGreaterThan(0);
+    // Straight behind stays blind even at arm's length: the spot for a takedown.
+    expect(sightStrength(hall(), at(200, 176), { x: 180, y: 176 })).toBe(0);
+    expect(inViewCone(at(200, 176), { x: 180, y: 176 })).toBe(false);
+    expect(inViewCone(at(200, 176), { x: 400, y: 180 })).toBe(true);
+  });
+
+  it('sees less far in a light zone that is switched off', () => {
+    const target = { x: 250, y: 176 };
+    expect(sightStrength(hall(), at(80, 176), target)).toBeGreaterThan(0);
+    expect(sightStrength(hall(), at(80, 176), target, ['lamps'])).toBe(0);
   });
 
   it('does not see through walls', () => {

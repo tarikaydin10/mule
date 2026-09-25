@@ -13,7 +13,7 @@ npm test        # Vitest, reine Spiellogik in src/systems
 npm run build   # Typecheck + Produktions-Build nach dist/
 ```
 
-Steuerung: WASD bewegt, E hebt Beute in Reichweite auf oder stellt sie ab, T schaltet das Wärmebild ein und aus (nur mit freien Händen), F verschwindet aus der grünen Extraktionszone mit aller Beute, die dort liegt oder getragen wird. R startet neu. Debug: O zeigt das Overlay mit Sichtkegeln, Geräuschradien und Temperaturen; für den Gate-Test starten 1 (Server-Block) und 2 (Kryoprobe) mit nur einer Beute-Art, 0 wieder mit allen.
+Steuerung: WASD bewegt, E meint, was vor dem Spieler liegt: Beute aufheben oder abstellen, Schalter umlegen, Versteck betreten oder verlassen. Q schlägt eine Wache nieder, die einem den Rücken zudreht (freie Hände), Leertaste wirft einen von drei Bolzen in Laufrichtung, der sechs Kacheln weiter Lärm macht. T schaltet das Wärmebild ein und aus (nur mit freien Händen), F verschwindet aus der grünen Extraktionszone mit aller Beute, die dort liegt oder getragen wird. R startet neu. Debug: O zeigt das Overlay mit Sichtkegeln, Wegen, Geräuschradien, Zonen und Temperaturen; für den Gate-Test starten 1 (Server-Block) und 2 (Kryoprobe) mit nur einer Beute-Art und fixiertem Zufall, 0 wieder mit allen und neuem Seed. `?map=testmap` lädt die kleine Testmap statt Pier 9.
 
 ## Maps
 
