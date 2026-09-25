@@ -1,4 +1,5 @@
 import * as Phaser from 'phaser';
+import { addThermalFilter, type ThermalFilter } from '../render/ThermalFilter';
 import type { GameEvent } from '../systems/events';
 import { clipPolygonToRect } from '../systems/geometry';
 import { DARK_SIGHT, GUARD_SIZE, type GuardMode, type GuardState } from '../systems/guards';
@@ -11,17 +12,20 @@ import {
   createGameState,
   inExtraction,
   lootInReach,
-  securedLoot,
   PLAYER_SIZE,
+  securedLoot,
   step,
   TICK_SECONDS,
   type Command,
   type GameOptions,
   type GameState,
 } from '../systems/simulation';
+import { PLAYER_TEMPERATURE, temperatureTint } from '../systems/thermal';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
 
 const LOCAL_PLAYER = 'p1';
+const WIDTH = 960;
+const HEIGHT = 540;
 // After a long stall (tab in background) the simulation catches up at most this far.
 // Slow frames below that are caught up in full, so the game never runs in slow motion.
 const MAX_CATCH_UP_SECONDS = 0.25;
@@ -33,6 +37,10 @@ const WALL_REVEAL = 6; // px, faces of walls in view stay visible
 const DARKNESS_OUT_OF_SIGHT = 0.92;
 const DARKNESS_IN_SIGHT = 0.72; // dark area the player has line of sight to
 const NEAR_ERASE = 0.45; // applied twice, at the full and at 60 % of NEAR_RADIUS, for a soft edge
+// Thermal vision needs no light, but heat does not pass glass.
+const THERMAL_RANGE = 380; // px
+// In thermal vision the surroundings are drawn at this grey: cold, but with walls still readable.
+const THERMAL_AMBIENT_TINT = 0x303030;
 
 // Placeholder look per loot kind: size in px and fill colour.
 const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number }> = {
@@ -40,8 +48,8 @@ const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number
   cryoSample: { width: 12, height: 18, color: 0x8fe3f0 },
 };
 
-// Draw order: world, view cones, loot, people, darkness, noise rings and objective, text.
-const DEPTH = { cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5, hud: 4, endScreen: 5 } as const;
+// Draw order: world, heat traces, view cones, loot, people, darkness, noise rings and objective.
+const DEPTH = { traces: 0.3, cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5 } as const;
 
 // Guard look per mode: body colour and view cone colour.
 const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
@@ -50,31 +58,44 @@ const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
   search: { body: 0xe07b39, cone: 0xf0a060 },
   alarm: { body: 0xd8433a, cone: 0xff5a4a },
 };
+const THERMAL_CAMERA_COLOR = 0x7fc8e6;
 const NOISE_RING_MS = 450;
+const MESSAGE_MS = 3500;
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
 /**
  * Translates input into commands, runs the simulation in fixed ticks and draws the result.
- * No game state lives here: the rectangle only mirrors `state`.
+ * No game state lives here: every view only mirrors `state`.
+ *
+ * Two cameras: the main camera shows the world and carries the thermal filter; the HUD
+ * camera shows only the text, so the filter never touches it.
  */
 export class GameScene extends Phaser.Scene {
   private level!: Level;
   private state!: GameState;
+  private options: GameOptions = {};
   private keys!: WasdKeys;
-  private playerView!: Phaser.GameObjects.Rectangle;
-  private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
-  private hint!: Phaser.GameObjects.Text;
-  private status!: Phaser.GameObjects.Text;
-  private guardViews = new Map<string, Phaser.GameObjects.Arc>();
-  private guardOverlay!: Phaser.GameObjects.Graphics;
-  private darkness!: Phaser.GameObjects.RenderTexture;
-  private eraser!: Phaser.GameObjects.Graphics;
-  private litFrom: Vector2 | null = null;
   private pending: Command[] = [];
   private lastDirection: Direction = { x: 0, y: 0 };
   private accumulator = 0;
-  private options: GameOptions = {};
+
+  private hudCamera!: Phaser.Cameras.Scene2D.Camera;
+  private thermalFilter!: ThermalFilter;
+  private thermalShown = false;
+  private tileLayers: Phaser.Tilemaps.TilemapLayer[] = [];
+  private playerView!: Phaser.GameObjects.Rectangle;
+  private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
+  private guardViews = new Map<string, Phaser.GameObjects.Arc>();
+  private overlay!: Phaser.GameObjects.Graphics;
+  private traces!: Phaser.GameObjects.Graphics;
+  private darkness!: Phaser.GameObjects.RenderTexture;
+  private eraser!: Phaser.GameObjects.Graphics;
+  private litFrom: { x: number; y: number; thermal: boolean } | null = null;
+
+  private hint!: Phaser.GameObjects.Text;
+  private status!: Phaser.GameObjects.Text;
+  private message: { text: string; until: number } | null = null;
   private endScreen: Phaser.GameObjects.Container | null = null;
 
   constructor() {
@@ -100,92 +121,23 @@ export class GameScene extends Phaser.Scene {
     this.level = parseLevel(tiled.data);
     this.state = createGameState(this.level, [LOCAL_PLAYER], this.options);
     // Phaser reuses the scene object on restart, so per-run fields are reset here.
-    this.lootViews = new Map();
-    this.guardViews = new Map();
     this.pending = [];
     this.lastDirection = { x: 0, y: 0 };
     this.accumulator = 0;
+    this.thermalShown = false;
+    this.lootViews = new Map();
+    this.guardViews = new Map();
     this.litFrom = null;
+    this.message = null;
     this.endScreen = null;
 
-    const map = this.make.tilemap({ key: 'testmap' });
-    // First argument is the tileset name inside the Tiled file.
-    const tileset = map.addTilesetImage('placeholder', 'tiles-placeholder');
-    if (!tileset) {
-      throw new Error('Tileset "placeholder" not found in testmap');
-    }
-    map.createLayer('ground', tileset);
-    map.createLayer('walls', tileset);
+    this.hudCamera = this.cameras.add(0, 0, WIDTH, HEIGHT);
+    this.createWorld();
+    this.createHud();
 
-    const player = this.state.players[LOCAL_PLAYER];
-    if (!player) {
-      throw new Error('Local player is missing from the game state');
-    }
-    this.playerView = this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2).setDepth(DEPTH.player);
-    for (const [id, loot] of Object.entries(this.state.loot)) {
-      const look = LOOT_LOOK[loot.kind];
-      this.lootViews.set(id, this.add.rectangle(loot.x, loot.y, look.width, look.height, look.color).setDepth(DEPTH.loot));
-    }
-    if (this.level.extraction) {
-      // The objective stays visible above the darkness.
-      const zone = this.level.extraction;
-      this.add
-        .rectangle(zone.x, zone.y, zone.width, zone.height)
-        .setOrigin(0, 0)
-        .setStrokeStyle(2, 0x5fd08a, 0.9)
-        .setFillStyle(0x5fd08a, 0.12)
-        .setDepth(DEPTH.noise);
-    }
-    for (const [id, guard] of Object.entries(this.state.guards)) {
-      this.guardViews.set(id, this.add.circle(guard.x, guard.y, GUARD_SIZE / 2, GUARD_LOOK.patrol.body).setDepth(DEPTH.player));
-    }
-    // View cones and suspicion bars, redrawn every frame, under the darkness like everything in the world.
-    this.guardOverlay = this.add.graphics().setDepth(DEPTH.cones);
-    this.status = this.add
-      .text(480, 16, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#ffffff', fontStyle: 'bold' })
-      .setOrigin(0.5, 0)
-      .setScrollFactor(0)
-      .setDepth(DEPTH.hud)
-      .setShadow(0, 1, '#000000', 4);
-    this.hint = this.add
-      .text(16, 540 - 16, '', { fontFamily: 'Arial, sans-serif', fontSize: '18px', color: '#e9ece6' })
-      .setOrigin(0, 1)
-      .setScrollFactor(0)
-      .setDepth(DEPTH.hud)
-      .setShadow(0, 1, '#000000', 3);
-
-    this.darkness = this.add
-      .renderTexture(0, 0, map.widthInPixels, map.heightInPixels)
-      .setOrigin(0, 0)
-      .setDepth(DEPTH.darkness);
-    // Not on the display list: only used to cut shapes out of the darkness.
-    this.eraser = this.make.graphics({}, false);
-
-    this.cameras.main.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-    this.cameras.main.startFollow(this.playerView, true);
-
-    const keyboard = this.input.keyboard;
-    if (!keyboard) {
-      throw new Error('Keyboard input is not available');
-    }
-    this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
-    // E picks up or puts down; the simulation decides whether it is possible.
-    keyboard.on('keydown-E', () => {
-      const type = carriedLoot(this.state, LOCAL_PLAYER) ? 'drop' : 'pickUp';
-      this.pending.push({ type, playerId: LOCAL_PLAYER });
-    });
-    keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
-    keyboard.on('keydown-R', () => this.scene.restart(this.options));
-    // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, 0 spawns all.
-    keyboard.on('keydown', (event: KeyboardEvent) => {
-      const kinds = Object.keys(LOOT) as LootKind[];
-      const kind = kinds[Number(event.key) - 1];
-      if (event.key === '0') {
-        this.scene.restart({});
-      } else if (/^[1-9]$/.test(event.key) && kind) {
-        this.scene.restart({ onlyLoot: kind });
-      }
-    });
+    this.thermalFilter = addThermalFilter(this.cameras.main);
+    this.thermalFilter.setActive(false);
+    this.bindKeys();
   }
 
   override update(): void {
@@ -202,48 +154,219 @@ export class GameScene extends Phaser.Scene {
     }
 
     const player = this.state.players[LOCAL_PLAYER];
-    if (player) {
-      this.playerView.setPosition(player.x, player.y);
-      this.drawDarkness(player);
+    if (!player) {
+      return;
     }
-    for (const [id, loot] of Object.entries(this.state.loot)) {
-      // Carried loot sits on top of the carrier.
-      this.lootViews.get(id)?.setPosition(loot.x, loot.y).setDepth(loot.carriedBy ? DEPTH.player + 0.5 : DEPTH.loot);
+    const thermal = player.thermalVision;
+    if (thermal !== this.thermalShown) {
+      this.setThermalView(thermal);
     }
-    this.drawGuards();
+    this.thermalFilter.time = this.time.now / 1000;
+
+    this.playerView.setPosition(player.x, player.y).setFillStyle(thermal ? temperatureTint(PLAYER_TEMPERATURE) : 0xf2f2f2);
+    this.drawLoot(thermal);
+    this.drawGuards(thermal);
+    this.drawHeat(thermal);
+    this.drawDarkness(player, thermal);
+
     if (this.state.outcome && !this.endScreen) {
       this.showEndScreen();
     }
     this.hint.setText(this.hintText());
-    this.status.setText(this.statusText()).setColor(this.anyGuard('alarm') ? '#ff6b5e' : '#f0c070');
+    const status = this.statusText();
+    this.status.setText(status.text).setColor(status.color);
   }
 
-  private drawGuards(): void {
-    const overlay = this.guardOverlay.clear();
+  // World
+
+  private createWorld(): void {
+    const map = this.make.tilemap({ key: 'testmap' });
+    // First argument is the tileset name inside the Tiled file.
+    const tileset = map.addTilesetImage('placeholder', 'tiles-placeholder');
+    const ground = tileset ? map.createLayer('ground', tileset) : null;
+    const walls = tileset ? map.createLayer('walls', tileset) : null;
+    // Plain (not GPU) layers, because the thermal view tints every tile.
+    if (!(ground instanceof Phaser.Tilemaps.TilemapLayer) || !(walls instanceof Phaser.Tilemaps.TilemapLayer)) {
+      throw new Error('Tileset "placeholder" and layers "ground" and "walls" are required');
+    }
+    this.tileLayers = [ground, walls];
+    this.world(ground);
+    this.world(walls);
+
+    const player = this.state.players[LOCAL_PLAYER];
+    if (!player) {
+      throw new Error('Local player is missing from the game state');
+    }
+    this.playerView = this.world(this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2)).setDepth(
+      DEPTH.player,
+    );
+    for (const [id, loot] of Object.entries(this.state.loot)) {
+      const look = LOOT_LOOK[loot.kind];
+      this.lootViews.set(
+        id,
+        this.world(this.add.rectangle(loot.x, loot.y, look.width, look.height, look.color)).setDepth(DEPTH.loot),
+      );
+    }
+    for (const [id, guard] of Object.entries(this.state.guards)) {
+      this.guardViews.set(
+        id,
+        this.world(this.add.circle(guard.x, guard.y, GUARD_SIZE / 2, GUARD_LOOK.patrol.body)).setDepth(DEPTH.player),
+      );
+    }
+    for (const camera of this.level.thermalCameras) {
+      this.world(this.add.rectangle(camera.x, camera.y, 10, 10, 0x39424c).setStrokeStyle(1, THERMAL_CAMERA_COLOR)).setDepth(
+        DEPTH.player,
+      );
+    }
+    if (this.level.extraction) {
+      // The objective stays visible above the darkness.
+      const zone = this.level.extraction;
+      this.world(this.add.rectangle(zone.x, zone.y, zone.width, zone.height))
+        .setOrigin(0, 0)
+        .setStrokeStyle(2, 0x5fd08a, 0.9)
+        .setFillStyle(0x5fd08a, 0.12)
+        .setDepth(DEPTH.noise);
+    }
+    // View cones and suspicion bars, redrawn every frame, under the darkness like everything in the world.
+    this.overlay = this.world(this.add.graphics()).setDepth(DEPTH.cones);
+    this.traces = this.world(this.add.graphics()).setDepth(DEPTH.traces);
+    this.darkness = this.world(this.add.renderTexture(0, 0, map.widthInPixels, map.heightInPixels))
+      .setOrigin(0, 0)
+      .setDepth(DEPTH.darkness);
+    // Not on the display list: only used to cut shapes out of the darkness.
+    this.eraser = this.make.graphics({}, false);
+
+    this.cameras.main.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
+    this.cameras.main.startFollow(this.playerView, true);
+  }
+
+  /** Marks an object as part of the world: the HUD camera does not draw it. */
+  private world<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    this.hudCamera.ignore(object);
+    return object;
+  }
+
+  /** Marks an object as HUD: the world camera, and with it the thermal filter, does not draw it. */
+  private hud<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    this.cameras.main.ignore(object);
+    return object;
+  }
+
+  private setThermalView(on: boolean): void {
+    this.thermalShown = on;
+    this.thermalFilter.setActive(on);
+    for (const layer of this.tileLayers) {
+      layer.forEachTile((tile) => {
+        tile.tint = on ? THERMAL_AMBIENT_TINT : 0xffffff;
+      });
+    }
+    this.litFrom = null;
+  }
+
+  private drawLoot(thermal: boolean): void {
+    for (const [id, view] of this.lootViews) {
+      const loot = this.state.loot[id];
+      if (!loot) {
+        // Lost, like a thawed cryo sample.
+        view.destroy();
+        this.lootViews.delete(id);
+        continue;
+      }
+      // Carried loot sits on top of the carrier.
+      view
+        .setPosition(loot.x, loot.y)
+        .setDepth(loot.carriedBy ? DEPTH.player + 0.5 : DEPTH.loot)
+        .setFillStyle(thermal ? temperatureTint(loot.temperature) : LOOT_LOOK[loot.kind].color);
+    }
+  }
+
+  private drawGuards(thermal: boolean): void {
+    const overlay = this.overlay.clear();
     for (const [id, guard] of Object.entries(this.state.guards)) {
       const look = GUARD_LOOK[guard.mode];
-      this.guardViews.get(id)?.setPosition(guard.x, guard.y).setFillStyle(look.body);
-      const range = GUARDS[guard.kind].sightRange;
-      const fov = GUARDS[guard.kind].fieldOfView;
+      const definition = GUARDS[guard.kind];
+      this.guardViews
+        .get(id)
+        ?.setPosition(guard.x, guard.y)
+        .setFillStyle(thermal ? temperatureTint(definition.temperature) : look.body);
+      if (thermal) {
+        // Thermal vision shows heat, not where anyone is looking.
+        continue;
+      }
       // Outer cone: how far the guard sees into light. Inner cone: how far it sees into darkness.
-      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, fov, range), look.cone, 0.12);
-      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, fov, range * DARK_SIGHT), look.cone, 0.2);
+      const range = definition.sightRange;
+      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, definition.fieldOfView, range), look.cone, 0.12);
+      fillPolygon(
+        overlay,
+        visionCone(this.level, guard, guard.facing, definition.fieldOfView, range * DARK_SIGHT),
+        look.cone,
+        0.2,
+      );
       if (guard.suspicion > 0) {
         const width = 24;
         overlay.fillStyle(0x000000, 0.6).fillRect(guard.x - width / 2, guard.y - 22, width, 4);
         overlay.fillStyle(look.body, 1).fillRect(guard.x - width / 2, guard.y - 22, width * guard.suspicion, 4);
       }
     }
+    if (!thermal) {
+      for (const camera of this.level.thermalCameras) {
+        const cone = visionCone(this.level, camera, camera.facing, camera.fieldOfView, camera.range, 'heat');
+        fillPolygon(overlay, cone, THERMAL_CAMERA_COLOR, 0.1);
+      }
+    }
   }
 
-  /** Noise shows as a ring that spreads to how far it carries, above the darkness. */
+  /** Residual heat of footsteps, only visible in thermal vision. */
+  private drawHeat(thermal: boolean): void {
+    const traces = this.traces.clear();
+    if (!thermal) {
+      return;
+    }
+    for (const trace of this.state.heatTraces) {
+      traces.fillStyle(temperatureTint(trace.temperature), 1).fillCircle(trace.x, trace.y, 5);
+    }
+  }
+
+  /**
+   * Redraws the darkness layer when the player has moved or switched vision. Normal vision:
+   * dark, except what the player can see. Thermal vision: black, except what heat reaches.
+   */
+  private drawDarkness(eye: Vector2, thermal: boolean): void {
+    if (this.litFrom && this.litFrom.x === eye.x && this.litFrom.y === eye.y && this.litFrom.thermal === thermal) {
+      return;
+    }
+    this.litFrom = { x: eye.x, y: eye.y, thermal };
+
+    const eraser = this.eraser.clear();
+    if (thermal) {
+      erase(eraser, visibilityPolygon(this.level, eye, THERMAL_RANGE, WALL_REVEAL, 'heat'), 1);
+      this.darkness.clear().fill(0x000000, 1).erase(eraser).render();
+      return;
+    }
+    const sight = visibilityPolygon(this.level, eye, SIGHT_RADIUS, WALL_REVEAL);
+    // Erasing with alpha a keeps (1 - a) of the darkness; overlapping shapes multiply.
+    erase(eraser, sight, 1 - DARKNESS_IN_SIGHT / DARKNESS_OUT_OF_SIGHT);
+    erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS, WALL_REVEAL), NEAR_ERASE);
+    erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS * 0.6, WALL_REVEAL), NEAR_ERASE);
+    for (const zone of this.level.lights) {
+      erase(eraser, clipPolygonToRect(sight, zone), zone.brightness);
+    }
+    this.darkness.clear().fill(0x000000, DARKNESS_OUT_OF_SIGHT).erase(eraser).render();
+  }
+
+  /** Noise shows as a ring that spreads to how far it carries; lost loot shows a message. */
   private showEvents(events: readonly GameEvent[]): void {
     for (const event of events) {
+      if (event.type === 'loot:lost') {
+        this.message = { text: 'Die Kryoprobe ist aufgetaut und verloren', until: this.time.now + MESSAGE_MS };
+      }
       if (event.type !== 'noise:emitted') {
         continue;
       }
-      const ring = this.add.circle(event.x, event.y, event.radius).setStrokeStyle(2, 0xffffff, 0.5).setDepth(DEPTH.noise);
-      ring.setScale(0.1);
+      const ring = this.world(this.add.circle(event.x, event.y, event.radius))
+        .setStrokeStyle(2, 0xffffff, 0.5)
+        .setDepth(DEPTH.noise)
+        .setScale(0.1);
       this.tweens.add({
         targets: ring,
         scale: 1,
@@ -255,18 +378,66 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  // HUD
+
+  private createHud(): void {
+    const font = 'Arial, sans-serif';
+    this.status = this.hud(
+      this.add
+        .text(WIDTH / 2, 16, '', { fontFamily: font, fontSize: '20px', color: '#ffffff', fontStyle: 'bold' })
+        .setOrigin(0.5, 0)
+        .setShadow(0, 1, '#000000', 4),
+    );
+    this.hint = this.hud(
+      this.add
+        .text(16, HEIGHT - 16, '', { fontFamily: font, fontSize: '18px', color: '#e9ece6' })
+        .setOrigin(0, 1)
+        .setShadow(0, 1, '#000000', 3),
+    );
+  }
+
   private anyGuard(mode: GuardMode): boolean {
     return Object.values(this.state.guards).some((guard: GuardState) => guard.mode === mode);
   }
 
-  private statusText(): string {
+  private statusText(): { text: string; color: string } {
     if (this.anyGuard('alarm')) {
-      return 'ALARM – du wurdest entdeckt';
+      return { text: 'ALARM – du wurdest entdeckt', color: '#ff6b5e' };
+    }
+    if (this.message && this.time.now < this.message.until) {
+      return { text: this.message.text, color: '#8fe3f0' };
     }
     if (this.anyGuard('investigate') || this.anyGuard('search')) {
-      return 'Eine Wache ist misstrauisch';
+      return { text: 'Eine Wache ist misstrauisch', color: '#f0c070' };
     }
-    return '';
+    return { text: '', color: '#ffffff' };
+  }
+
+  private hintText(): string {
+    if (this.state.outcome) {
+      return '';
+    }
+    if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
+      const value = securedLoot(this.state, this.level).reduce((sum, id) => {
+        const loot = this.state.loot[id];
+        return sum + (loot ? LOOT[loot.kind].value : 0);
+      }, 0);
+      return `F: verschwinden   ·   gesichert: ${formatValue(value)}`;
+    }
+    const carried = carriedLoot(this.state, LOCAL_PLAYER);
+    const carriedState = carried ? this.state.loot[carried] : undefined;
+    if (carriedState) {
+      const loot = LOOT[carriedState.kind];
+      const effects = [
+        loot.speedMultiplier < 1 ? 'langsamer' : null,
+        loot.handsFree ? null : 'beide Hände belegt, kein Wärmebild',
+        carriedState.thawing ? `${Math.round(carriedState.temperature * 100)} % aufgetaut` : null,
+      ].filter(Boolean);
+      return `Trägt: ${loot.name}${effects.length ? ` (${effects.join(', ')})` : ''}   ·   E: abstellen`;
+    }
+    const reachable = lootInReach(this.state, LOCAL_PLAYER);
+    const reachableKind = reachable ? this.state.loot[reachable]?.kind : undefined;
+    return reachableKind ? `E: ${LOOT[reachableKind].name} aufheben (Wert ${formatValue(LOOT[reachableKind].value)})` : '';
   }
 
   private showEndScreen(): void {
@@ -283,9 +454,9 @@ export class GameScene extends Phaser.Scene {
           : 'Ohne Beute verschwunden. Wert: 0';
     const only = this.options.onlyLoot ? `   ·   nur ${LOOT[this.options.onlyLoot].name} (0: alle)` : '';
     const font = 'Arial, sans-serif';
-    this.endScreen = this.add
-      .container(480, 270, [
-        this.add.rectangle(0, 0, 960, 540, 0x000000, 0.72),
+    this.endScreen = this.hud(
+      this.add.container(WIDTH / 2, HEIGHT / 2, [
+        this.add.rectangle(0, 0, WIDTH, HEIGHT, 0x000000, 0.72),
         this.add
           .text(0, -50, caught ? 'Geschnappt' : 'Entkommen', {
             fontFamily: font,
@@ -300,54 +471,36 @@ export class GameScene extends Phaser.Scene {
         this.add
           .text(0, 110, `R: neu starten${only}`, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' })
           .setOrigin(0.5, 0),
-      ])
-      .setScrollFactor(0)
-      .setDepth(DEPTH.endScreen);
+      ]),
+    );
   }
 
-  private hintText(): string {
-    if (this.state.outcome) {
-      return '';
-    }
-    if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
-      const value = securedLoot(this.state, this.level).reduce((sum, id) => {
-        const loot = this.state.loot[id];
-        return sum + (loot ? LOOT[loot.kind].value : 0);
-      }, 0);
-      return `F: verschwinden   ·   gesichert: ${formatValue(value)}`;
-    }
-    const carried = carriedLoot(this.state, LOCAL_PLAYER);
-    const carriedKind = carried ? this.state.loot[carried]?.kind : undefined;
-    if (carriedKind) {
-      const loot = LOOT[carriedKind];
-      const effects = [
-        loot.speedMultiplier < 1 ? 'langsamer' : null,
-        loot.handsFree ? null : 'beide Hände belegt',
-      ].filter(Boolean);
-      return `Trägt: ${loot.name}${effects.length ? ` (${effects.join(', ')})` : ''}   ·   E: abstellen`;
-    }
-    const reachable = lootInReach(this.state, LOCAL_PLAYER);
-    const reachableKind = reachable ? this.state.loot[reachable]?.kind : undefined;
-    return reachableKind ? `E: ${LOOT[reachableKind].name} aufheben` : '';
-  }
+  // Input
 
-  /** Redraws the darkness layer when the player has moved: dark, except what the player can see. */
-  private drawDarkness(eye: Vector2): void {
-    if (this.litFrom && this.litFrom.x === eye.x && this.litFrom.y === eye.y) {
-      return;
+  private bindKeys(): void {
+    const keyboard = this.input.keyboard;
+    if (!keyboard) {
+      throw new Error('Keyboard input is not available');
     }
-    this.litFrom = { x: eye.x, y: eye.y };
-
-    const sight = visibilityPolygon(this.level, eye, SIGHT_RADIUS, WALL_REVEAL);
-    const eraser = this.eraser.clear();
-    // Erasing with alpha a keeps (1 - a) of the darkness; overlapping shapes multiply.
-    erase(eraser, sight, 1 - DARKNESS_IN_SIGHT / DARKNESS_OUT_OF_SIGHT);
-    erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS, WALL_REVEAL), NEAR_ERASE);
-    erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS * 0.6, WALL_REVEAL), NEAR_ERASE);
-    for (const zone of this.level.lights) {
-      erase(eraser, clipPolygonToRect(sight, zone), zone.brightness);
-    }
-    this.darkness.clear().fill(0x000000, DARKNESS_OUT_OF_SIGHT).erase(eraser).render();
+    this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
+    // E picks up or puts down; the simulation decides whether it is possible.
+    keyboard.on('keydown-E', () => {
+      const type = carriedLoot(this.state, LOCAL_PLAYER) ? 'drop' : 'pickUp';
+      this.pending.push({ type, playerId: LOCAL_PLAYER });
+    });
+    keyboard.on('keydown-T', () => this.pending.push({ type: 'toggleThermal', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
+    keyboard.on('keydown-R', () => this.scene.restart(this.options));
+    // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, 0 spawns all.
+    keyboard.on('keydown', (event: KeyboardEvent) => {
+      const kinds = Object.keys(LOOT) as LootKind[];
+      const kind = kinds[Number(event.key) - 1];
+      if (event.key === '0') {
+        this.scene.restart({});
+      } else if (/^[1-9]$/.test(event.key) && kind) {
+        this.scene.restart({ onlyLoot: kind });
+      }
+    });
   }
 
   /** Sends a move command only when the direction changes, as a network client would. */
@@ -366,15 +519,7 @@ export class GameScene extends Phaser.Scene {
 }
 
 function erase(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], alpha: number): void {
-  const [first, ...rest] = polygon;
-  if (!first || rest.length < 2) {
-    return;
-  }
-  graphics.fillStyle(0xffffff, alpha).beginPath().moveTo(first.x, first.y);
-  for (const point of rest) {
-    graphics.lineTo(point.x, point.y);
-  }
-  graphics.closePath().fillPath();
+  fillPolygon(graphics, polygon, 0xffffff, alpha);
 }
 
 function fillPolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], color: number, alpha: number): void {

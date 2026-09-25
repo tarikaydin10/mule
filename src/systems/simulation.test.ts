@@ -352,6 +352,19 @@ describe('thermal', () => {
     ]);
   });
 
+  it('does not let thermal cameras react to the guards themselves', () => {
+    const camLevel = {
+      ...level,
+      thermalCameras: [{ id: 'cam', x: 48, y: 80, facing: 0, fieldOfView: Math.PI / 2, range: 300 }],
+      // The guard walks right through the camera's view.
+      guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 90, y: 80 }, { x: 180, y: 80 }], partner: null }],
+    };
+    // No players, so nothing but the guard is warm in view.
+    const state = ticks(createGameState(camLevel, []), 2 * TICK_RATE, camLevel);
+    expect(state.guards.g?.mode).toBe('patrol');
+    expect(state.cameras.cam?.suspicion).toBe(0);
+  });
+
   it('puts every guard on alarm when a thermal camera sees heat', () => {
     // A camera looks at the spawn; a warm source there is what a thawed probe would be.
     const camLevel = {

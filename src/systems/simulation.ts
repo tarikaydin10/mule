@@ -156,11 +156,18 @@ export function inExtraction(state: GameState, level: Level, playerId: string): 
   return Boolean(player && level.extraction && insideRect(level.extraction, player));
 }
 
-/** Everything warm in the world, as the thermal gadget and thermal cameras perceive it. */
+/** Everything warm in the world, as the thermal gadget perceives it. */
 export function heatSources(state: GameState): HeatSource[] {
   return [
-    ...Object.values(state.players).map((player) => ({ x: player.x, y: player.y, temperature: PLAYER_TEMPERATURE })),
     ...Object.values(state.guards).map((guard) => ({ x: guard.x, y: guard.y, temperature: GUARDS[guard.kind].temperature })),
+    ...intruderHeat(state),
+  ];
+}
+
+/** What thermal cameras watch for: players, loot and their traces. The guards' own body heat is expected. */
+export function intruderHeat(state: GameState): HeatSource[] {
+  return [
+    ...Object.values(state.players).map((player) => ({ x: player.x, y: player.y, temperature: PLAYER_TEMPERATURE })),
     ...Object.values(state.loot).map((loot) => ({ x: loot.x, y: loot.y, temperature: loot.temperature })),
     ...state.heatTraces,
   ];
@@ -281,7 +288,7 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
   }
 
   const loot = thaw(followCarriers(commanded.loot, players), events);
-  const cameras = updateCameras(commanded.cameras, heatSources({ ...commanded, players, loot, heatTraces }), level);
+  const cameras = updateCameras(commanded.cameras, intruderHeat({ ...commanded, players, loot, heatTraces }), level);
   events.push(...cameras.events);
 
   const partnerAlerts = state.events.filter((event) => event.type === 'guard:alerted');
