@@ -21,6 +21,7 @@ import {
   type GameState,
 } from '../systems/simulation';
 import { PLAYER_TEMPERATURE, temperatureTint } from '../systems/thermal';
+import { TICK_RATE } from '../systems/tick';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
 
 const LOCAL_PLAYER = 'p1';
@@ -61,6 +62,8 @@ const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
 const THERMAL_CAMERA_COLOR = 0x7fc8e6;
 const NOISE_RING_MS = 450;
 const MESSAGE_MS = 3500;
+const DEBUG_NOISE_MS = 1000;
+const DEBUG_FONT = { fontFamily: 'Menlo, Consolas, monospace', fontSize: '11px', color: '#ffffff', backgroundColor: '#000000a0' };
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
@@ -98,6 +101,12 @@ export class GameScene extends Phaser.Scene {
   private message: { text: string; until: number } | null = null;
   private endScreen: Phaser.GameObjects.Container | null = null;
 
+  private debug = false;
+  private debugGraphics!: Phaser.GameObjects.Graphics;
+  private debugLabels = new Map<string, Phaser.GameObjects.Text>();
+  private debugInfo!: Phaser.GameObjects.Text;
+  private recentNoise: { x: number; y: number; radius: number; until: number }[] = [];
+
   constructor() {
     super('game');
   }
@@ -130,6 +139,8 @@ export class GameScene extends Phaser.Scene {
     this.litFrom = null;
     this.message = null;
     this.endScreen = null;
+    this.debugLabels = new Map();
+    this.recentNoise = [];
 
     this.hudCamera = this.cameras.add(0, 0, WIDTH, HEIGHT);
     this.createWorld();
@@ -175,6 +186,7 @@ export class GameScene extends Phaser.Scene {
     this.hint.setText(this.hintText());
     const status = this.statusText();
     this.status.setText(status.text).setColor(status.color);
+    this.drawDebug();
   }
 
   // World
@@ -236,8 +248,12 @@ export class GameScene extends Phaser.Scene {
     // Not on the display list: only used to cut shapes out of the darkness.
     this.eraser = this.make.graphics({}, false);
 
-    this.cameras.main.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-    this.cameras.main.startFollow(this.playerView, true);
+    // Both cameras follow the player the same way, so the HUD camera can also draw world-space
+    // debug shapes; fixed HUD text uses scroll factor 0.
+    for (const camera of [this.cameras.main, this.hudCamera]) {
+      camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
+      camera.startFollow(this.playerView, true);
+    }
   }
 
   /** Marks an object as part of the world: the HUD camera does not draw it. */
@@ -363,6 +379,7 @@ export class GameScene extends Phaser.Scene {
       if (event.type !== 'noise:emitted') {
         continue;
       }
+      this.recentNoise.push({ x: event.x, y: event.y, radius: event.radius, until: this.time.now + DEBUG_NOISE_MS });
       const ring = this.world(this.add.circle(event.x, event.y, event.radius))
         .setStrokeStyle(2, 0xffffff, 0.5)
         .setDepth(DEPTH.noise)
@@ -386,13 +403,86 @@ export class GameScene extends Phaser.Scene {
       this.add
         .text(WIDTH / 2, 16, '', { fontFamily: font, fontSize: '20px', color: '#ffffff', fontStyle: 'bold' })
         .setOrigin(0.5, 0)
+        .setScrollFactor(0)
         .setShadow(0, 1, '#000000', 4),
     );
     this.hint = this.hud(
       this.add
         .text(16, HEIGHT - 16, '', { fontFamily: font, fontSize: '18px', color: '#e9ece6' })
         .setOrigin(0, 1)
+        .setScrollFactor(0)
         .setShadow(0, 1, '#000000', 3),
+    );
+    this.debugGraphics = this.hud(this.add.graphics());
+    this.debugInfo = this.hud(this.add.text(8, 8, '', DEBUG_FONT).setScrollFactor(0));
+  }
+
+  /**
+   * Debug overlay (O): what the systems see, drawn above the darkness and without the filter.
+   * Guard view cones with mode, suspicion and temperature, thermal cameras, noise radii of the
+   * last second, temperatures of players and loot, light and noise zones.
+   */
+  private drawDebug(): void {
+    const g = this.debugGraphics.clear();
+    const used = new Set<string>();
+    const label = (key: string, x: number, y: number, text: string) => {
+      used.add(key);
+      const existing = this.debugLabels.get(key);
+      const view = existing ?? this.hud(this.add.text(0, 0, '', DEBUG_FONT).setOrigin(0.5, 1));
+      this.debugLabels.set(key, view);
+      view.setPosition(Math.round(x), Math.round(y)).setText(text).setVisible(true);
+    };
+    const pct = (value: number) => `${Math.round(value * 100)}%`;
+    const temp = (value: number) => value.toFixed(2);
+
+    if (this.debug) {
+      for (const zone of this.level.lights) {
+        g.lineStyle(1, 0xfff2a0, 0.6).strokeRect(zone.x, zone.y, zone.width, zone.height);
+        label(`light-${zone.name}`, zone.x + zone.width / 2, zone.y + 14, `Licht ${zone.name} ${zone.brightness}`);
+      }
+      for (const zone of this.level.noiseZones) {
+        g.lineStyle(1, 0xc0a0ff, 0.6).strokeRect(zone.x + 2, zone.y + 2, zone.width - 4, zone.height - 4);
+        label(`noise-${zone.name}`, zone.x + zone.width / 2, zone.y + zone.height - 4, `Geräusch ${zone.name} ×${zone.surface} −${pct(zone.masking)}`);
+      }
+      this.recentNoise = this.recentNoise.filter((noise) => noise.until > this.time.now);
+      for (const noise of this.recentNoise) {
+        g.lineStyle(1, 0xffffff, 0.8).strokeCircle(noise.x, noise.y, noise.radius);
+      }
+      for (const [id, guard] of Object.entries(this.state.guards)) {
+        const definition = GUARDS[guard.kind];
+        const color = GUARD_LOOK[guard.mode].cone;
+        strokePolygon(g, visionCone(this.level, guard, guard.facing, definition.fieldOfView, definition.sightRange), color, 0.9);
+        strokePolygon(
+          g,
+          visionCone(this.level, guard, guard.facing, definition.fieldOfView, definition.sightRange * DARK_SIGHT),
+          color,
+          0.9,
+        );
+        for (const point of guard.path) {
+          g.fillStyle(color, 0.8).fillCircle(point.x, point.y, 2);
+        }
+        label(id, guard.x, guard.y - 14, `${guard.mode} ${pct(guard.suspicion)} · ${temp(definition.temperature)}`);
+      }
+      for (const camera of this.level.thermalCameras) {
+        strokePolygon(g, visionCone(this.level, camera, camera.facing, camera.fieldOfView, camera.range, 'heat'), THERMAL_CAMERA_COLOR, 0.9);
+        label(camera.id, camera.x, camera.y - 8, `Wärmekamera ${pct(this.state.cameras[camera.id]?.suspicion ?? 0)}`);
+      }
+      for (const [id, player] of Object.entries(this.state.players)) {
+        label(id, player.x, player.y - 14, `Spieler ${temp(PLAYER_TEMPERATURE)}`);
+      }
+      for (const [id, loot] of Object.entries(this.state.loot)) {
+        label(id, loot.x, loot.y + 22, `${LOOT[loot.kind].name} ${temp(loot.temperature)}`);
+      }
+    }
+    for (const [key, view] of this.debugLabels) {
+      if (!used.has(key)) {
+        view.setVisible(false);
+      }
+    }
+    this.debugInfo.setText(
+      this.debug
+        ? `DEBUG (O)   Tick ${this.state.tick} · ${(this.state.tick / TICK_RATE).toFixed(1)} s   ·   Beute-Spawn: 1 Server-Block, 2 Kryoprobe, 0 alle${this.options.onlyLoot ? ` (aktiv: ${LOOT[this.options.onlyLoot].name})` : ''}`
+        : '',
     );
   }
 
@@ -471,7 +561,7 @@ export class GameScene extends Phaser.Scene {
         this.add
           .text(0, 110, `R: neu starten${only}`, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' })
           .setOrigin(0.5, 0),
-      ]),
+      ]).setScrollFactor(0),
     );
   }
 
@@ -491,6 +581,9 @@ export class GameScene extends Phaser.Scene {
     keyboard.on('keydown-T', () => this.pending.push({ type: 'toggleThermal', playerId: LOCAL_PLAYER }));
     keyboard.on('keydown-F', () => this.pending.push({ type: 'extract', playerId: LOCAL_PLAYER }));
     keyboard.on('keydown-R', () => this.scene.restart(this.options));
+    keyboard.on('keydown-O', () => {
+      this.debug = !this.debug;
+    });
     // Debug switch for the gate test: 1, 2, ... spawn only that loot kind, 0 spawns all.
     keyboard.on('keydown', (event: KeyboardEvent) => {
       const kinds = Object.keys(LOOT) as LootKind[];
@@ -532,6 +625,18 @@ function fillPolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], 
     graphics.lineTo(point.x, point.y);
   }
   graphics.closePath().fillPath();
+}
+
+function strokePolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], color: number, alpha: number): void {
+  const [first, ...rest] = polygon;
+  if (!first || rest.length < 2) {
+    return;
+  }
+  graphics.lineStyle(1, color, alpha).beginPath().moveTo(first.x, first.y);
+  for (const point of rest) {
+    graphics.lineTo(point.x, point.y);
+  }
+  graphics.closePath().strokePath();
 }
 
 function formatValue(value: number): string {
