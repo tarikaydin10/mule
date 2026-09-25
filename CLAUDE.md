@@ -29,6 +29,14 @@ Geplante Map-Typen: Fracht-Dock (dunkel, Wachen in 2er-Teams), Rechenzentrum (L�
 
 Spätere Option (nicht im Prototyp): mehrere Etagen, verbunden über Treppen, Leitern, Aufzüge, Schächte – Gewicht der Beute bestimmt, welche Verbindungen nutzbar sind.
 
+## Missionsstruktur
+
+- **Briefing (minimal):** Ein Auftrag, mehrere mögliche Ziele mit unterschiedlichem Wert, Ausrüstungswahl. Keine Festlegung auf eine Beute.
+- **Vor Ort:** Alle Ziele liegen auf der Map. Der Spieler entscheidet mit echten Informationen, kann sich umentscheiden (Beute abstellen, andere nehmen) oder gierig werden (mehrere Beuten = Nachteile stapeln sich oder mehrere Gänge).
+- **Belohnung balanciert die Wahl:** Die schwierigere Beute muss spürbar mehr wert sein, sonst wird die leichte zur einzigen Wahl.
+- **Ausrüstung vor, Beute nach dem Briefing ist gewollt:** Die Ausrüstungswahl ist eine Wette auf die spätere Entscheidung.
+- **Hinweise (später, ab Vertical Slice):** Optional auffindbare Informationen (belauschte Gespräche, Wartungspläne). Sie liefern Informationen, keine Lösungen, und sind nie Pflicht.
+
 ## Gadgets (Wahrnehmung)
 
 | Gadget | Zeigt | Schwäche |
@@ -108,11 +116,13 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 
 **Umfang:**
 - Map: Fracht-Dock (dunkel, verwinkelt, 2er-Wachen) plus eine helle Glassektion als Abkürzung zur Extraktion
-- Beuten: Server-Block und Kryoprobe
-- Gadget: Wärmebild
+- Beuten: Server-Block und Kryoprobe, beide gleichzeitig auf der Map, Spieler wählt vor Ort
+- Beute-Wert pro Ziel (einfacher Zahlenwert, am Ende angezeigt)
+- Debug-Schalter: nur eine der beiden Beuten spawnen (nötig, um das Gate sauber zu testen)
+- Gadget: Wärmebild (feste Ausrüstung, keine Auswahl)
 - Systeme: Bewegung, Carry, Light, Noise, Thermal, Guard AI mit Paaren, Extraktion, Fail-State
 
-**Nicht im Umfang:** Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Koop, Social Stealth, Waffen außer Takedown.
+**Nicht im Umfang:** Briefing-Bildschirm, Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Koop, Social Stealth, Waffen außer Takedown.
 
 **Reihenfolge:**
 1. Projekt-Setup, Command-Layer, Spieler bewegt sich top-down, Kollision mit Wänden, Testmap aus Tiled
@@ -120,4 +130,4 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 3. Carry-System + Server-Block
 4. Noise-System + Guard AI (Patrouille, Hören, Sehen, Paare)
 5. Thermal-System, Wärmebild-Gadget, Kryoprobe, Wärmekamera (inkl. Glas blockiert Thermal)
-6. Extraktion, Fail-State, Debug-Overlay (Geräuschradien, Sichtkegel, Temperaturen)
+6. Extraktion, Fail-State, Beute-Wert-Anzeige, Debug-Overlay (Geräuschradien, Sichtkegel, Temperaturen), Debug-Schalter für Beuten-Spawn
