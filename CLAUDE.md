@@ -37,6 +37,19 @@ Spätere Option (nicht im Prototyp): mehrere Etagen, verbunden über Treppen, Le
 - **Ausrüstung vor, Beute nach dem Briefing ist gewollt:** Die Ausrüstungswahl ist eine Wette auf die spätere Entscheidung.
 - **Hinweise (später, ab Vertical Slice):** Optional auffindbare Informationen (belauschte Gespräche, Wartungspläne). Sie liefern Informationen, keine Lösungen, und sind nie Pflicht.
 
+## Spieler-Verben
+
+Bewegen und Aufheben reichen nicht für eine reife Umgebung. Vier Werkzeuge, jedes mit Preis, alle über die globalen Systeme abgebildet. `E` ist die eine Interaktionstaste und meint, was gerade vor dem Spieler liegt.
+
+| Verb | Bedingung | Wirkung | Preis |
+|---|---|---|---|
+| Takedown (`Q`) | freie Hände, Wache von hinten, außerhalb ihres Sichtkegels | Wache liegt am Boden | Partner geht in Alarm; jede Wache, die die liegende sieht, ebenso |
+| Wurf (`Leertaste`) | freie Hände, 3 Bolzen pro Lauf | Geräusch 6 Kacheln in Laufrichtung, Radius 5 Kacheln | die nächste Wache geht nachsehen, Bolzen ist weg |
+| Verstecken (`E` am Versteck) | Versteck in Reichweite | für Augen unsichtbar, keine Bewegung, Verlassen dauert 0,5 s | Metall ist kein Glas: warme Beute im Versteck sehen Wärmekameras trotzdem |
+| Schalten (`E` am Schalter) | Schalter in Reichweite | Licht- oder Geräuschzone aus oder an | Klack-Geräusch am Schalter; benannte Wachen kommen nachsehen |
+
+Konsistenzregel: Jede Interaktion zeigt vorher in der Hinweiszeile, was passiert, und nachher in der Welt, was passiert ist.
+
 ## Gadgets (Wahrnehmung)
 
 | Gadget | Zeigt | Schwäche |
@@ -49,12 +62,14 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 ## Globale Systeme
 
 - **Noise:** Geräuschereignisse mit Radius, Oberflächen- und Umgebungsmodifikator (Maskierung durch Lüfter).
-- **Light:** Beleuchtungszonen, schaltbar. Bestimmt Sichtweite der Wachen UND was der Spieler in der Standardansicht sieht.
+- **Light:** Beleuchtungszonen, schaltbar über Schalter-Objekte. Bestimmt Sichtweite der Wachen UND was der Spieler in der Standardansicht sieht.
 - **Thermal:** Jede Entität hat `temperature` (0–1). Wärmebild-Gadget und Wärmesensoren lesen denselben Wert. Glas blockiert Thermal-Sicht.
 - **Sensors:** Kameras, Laser, Wärmekameras.
-- **Guard AI:** Patrouille, Verdacht, Suche, Alarm. Paar-Verhalten (Takedown eines Partners alarmiert den anderen).
+- **Guard AI:** Patrouille, Posten, Verdacht, Suche, Alarm, wachsam, am Boden. Paare laufen versetzt auf derselben Route und halten an Plauderpunkten an. Paar-Verhalten (Takedown eines Partners alarmiert den anderen). Nach einer Suche ohne Fund bleibt eine Wache 60 s wachsam (weiterer Kegel, schnellerer Verdacht) und kehrt an einen zufälligen Punkt ihrer Runde zurück. Alarm ist Jagd, nicht Ende: Sichtlinie 4 s gebrochen führt in die Suche.
 
 **Detection-Modell:** Wachen reagieren auf `wahrgenommen × verdächtig`, nicht nur auf `wahrgenommen`. Aktuell ist alles verdächtig – aber die Trennung bleibt, damit später Social-Stealth-Maps (öffentliche Räume, Kiste als Tarnung) möglich sind.
+
+**Fairness-Regeln** (Vertrag zwischen Map und Spieler, jede Stufe wird dagegen getestet): sichtbar, bevor gefährlich · Entdeckung dauert auf Distanz mindestens 1 s · Alarm hat einen Ausgang · kein Raum ohne zweiten Ausgang (Ausnahme: Taschen mit Versteck) · jeder Weg für jede Beute, die Map setzt Preise, keine Verbote · Werkzeuge haben Preise · die Welt erklärt sich selbst, kein Tutorial-Text.
 
 ## Tech-Stack
 
@@ -86,6 +101,12 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Rundenende: `state.outcome` ist `null`, solange die Runde läuft. `extract` in der Extraktionszone beendet sie als `escaped` mit der gesicherten Beute (liegt in der Zone oder wird dort getragen) und ihrem Wert, eine Wache im Alarm in `CATCH_DISTANCE` als `caught`. Danach ändert `step` nichts mehr. Mehrere Gänge sind möglich: Beute in der Zone ablegen, weitere holen.
 - Debug-Schalter für das Gate: `createGameState(..., { onlyLoot })` spawnt nur eine Beute-Art; im Spiel die Tasten 1, 2 … (0: alle).
 - Debug-Overlay (Taste O): Sichtkegel und Wege der Wachen mit Modus, Verdacht und Temperatur, Wärmekameras mit Erfassungsstand, Geräuschradien der letzten Sekunde, Temperaturen von Spieler und Beute, Licht- und Geräuschzonen. Es zeichnet über der Dunkelheit und ungefiltert.
+- Zufall pro Lauf: `state.seed` ist Teil des Zustands (Koop: auf allen Hosts gleich), `src/systems/random.ts` liefert daraus deterministische Zahlen. Gezogen werden der Platz jeder Beute-Gruppe, der Plauderpunkt jedes Paars und Umwege von Wachen. `createGameState(..., { fixed: true })` (Taste 1/2/0 im Spiel) fixiert alles auf die erste Variante für den Gate-Test.
+- Schaltbare Zonen: `state.zones` hält je Zonenname, ob sie an ist. `illuminationAt` und `noiseRadius` nehmen die abgeschalteten Zonen entgegen. Schalter sind Objekte, Command `toggleSwitch`.
+- Verstecke: `player.hidden` ist die Id des Versteck-Objekts oder `null`. Versteckte Spieler bewegen sich nicht und haben für Wachen `sightStrength` 0. Command `hide` betritt oder verlässt.
+- Wurf: Command `throw` mit Richtung; der Bolzen landet 6 Kacheln entfernt oder an der ersten Wand und erzeugt `noise:emitted`. `player.bolts` zählt herunter.
+- Takedown: Command `takedown`; Wache in Reichweite, Spieler außerhalb ihres Sichtkegels, freie Hände. Die Wache geht in `down`, Event `guard:alerted` mit `alarm` für den Partner. Liegende Wachen sind Ziele für `sightStrength` anderer Wachen; ein Fund alarmiert die findende Wache.
+- Map-Auswahl: `?map=pier9` (Standard) oder `?map=testmap`. Schilder sind Objekte vom Typ `sign`, ihr Name ist der Text.
 - Thermal (`src/systems/thermal.ts`): Temperaturen 0–1 stehen in den Daten (Wachentypen, Beuten) bzw. im Zustand (Beute, Wärmespuren). Annahme: Der Anzug des Spielers maskiert Körperwärme (`PLAYER_TEMPERATURE` 0,25), Wärmekameras reagieren ab `THERMAL_DETECTION` 0,5 – sonst sähen sie den Spieler immer und die Kryoprobe-Regel liefe ins Leere. Die Kryoprobe taut ab dem ersten Aufheben auf und geht bei 1 verloren (`loot:lost`). Schritte hinterlassen Restwärme unter der Schwelle.
 - Wärmekameras (`src/systems/sensors.ts`) sehen Spieler, Beute und Spuren über der Schwelle im Kegel mit Wärme-Sichtlinie (nicht durch Glas), nicht aber Wachen; nach etwa 0,5 s gibt es `sensor:alarm`, alle Wachen gehen in Alarm.
 - Wärmebild-Gadget: `thermalVision` im Spielerzustand, Command `toggleThermal` nur mit freien Händen; beidhändige Beute schaltet es aus. Die Szene färbt dann alles in den Grauwert seiner Temperatur und aktiviert den Kamera-Filter (`src/render/`). Texte zeichnet eine zweite Kamera ohne Filter.
@@ -95,7 +116,9 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - `src/systems/` – reine Spiellogik ohne Phaser, mit Vitest-Tests daneben (`*.test.ts`). Ein Test bricht ab, sobald hier Phaser importiert wird.
 - `src/scenes/` – Phaser-Szenen: übersetzen Input in Commands und zeichnen den Spielzustand.
 - `src/render/` – Rendering-Bausteine für Phaser, z. B. der Wärmebild-Filter mit seinem Shader.
-- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides` im Layer `walls`; Glas-Kacheln haben zusätzlich `glass` (Licht und Sicht gehen durch, Wärme nicht; `blocksSight(..., 'light' | 'heat')`), Spawnpunkte als Objekte im Layer `objects`. Beuten sind Punkt-Objekte vom Typ `loot` im Layer `objects` mit der string-Property `kind` (Schlüssel aus `LOOT`). Die Extraktion ist ein Rechteck vom Typ `extraction` im Layer `objects` (höchstens eines). Wärmekameras sind Punkt-Objekte vom Typ `thermalCamera` mit den float-Properties `angle` (Grad, 0 = rechts, 90 = unten), optional `fov` (Grad, Standard 70) und `range` (px, Standard 280). Wachen sind Polylinien vom Typ `guard` im Layer `objects`: die Linie ist die Patrouillenroute, string-Properties `kind` (Schlüssel aus `GUARDS`) und optional `partner` (Name der anderen Wache). Lichtzonen sind Rechtecke im Layer `lights` mit der float-Property `brightness` (0–1); alles außerhalb ist dunkel. Geräuschzonen sind Rechtecke im Layer `noise` mit den float-Properties `surface` (Standard 1) und `masking` (Standard 0).
+- `docs/` – Konzepte, z. B. `docs/pier9.md` für die erste richtige Map.
+- `scripts/` – Generatoren: `make-tileset.mjs` (Platzhalter-Tileset) und `make-pier9.mjs` (erster Entwurf der Map; danach ist die Tiled-Datei die Quelle).
+- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides` im Layer `walls`; Glas-Kacheln haben zusätzlich `glass` (Licht und Sicht gehen durch, Wärme nicht; `blocksSight(..., 'light' | 'heat')`), Spawnpunkte als Objekte im Layer `objects`. Beuten sind Punkt-Objekte vom Typ `loot` im Layer `objects` mit der string-Property `kind` (Schlüssel aus `LOOT`); optional `group` und `variant`: aus jeder Gruppe wird pro Lauf eine Variante gezogen (`fixed`: die alphabetisch erste). Verstecke sind Objekte vom Typ `hideSpot`, Schalter vom Typ `switch` mit `target` (Zonenname), optional `alerts` (Wachennamen, kommagetrennt), Schilder vom Typ `sign`. Die Extraktion ist ein Rechteck vom Typ `extraction` im Layer `objects` (höchstens eines). Wärmekameras sind Punkt-Objekte vom Typ `thermalCamera` mit den float-Properties `angle` (Grad, 0 = rechts, 90 = unten), optional `fov` (Grad, Standard 70) und `range` (px, Standard 280). Wachen sind Polylinien vom Typ `guard` im Layer `objects`: die Linie ist die Patrouillenroute, string-Properties `kind` (Schlüssel aus `GUARDS`) und optional `partner` (Name der anderen Wache), `wait` (`index:sekunden;…`, Halt an Routenpunkten), `chat` (`index,index`: pro Lauf wird ein Plauderpunkt gezogen, 6 s). Ein Punkt-Objekt vom Typ `guard` ist ein Posten: `facing` (Grad) und `sweep` (Grad, Standard 120). Polylinien vom Typ `detour` mit `guard` (Name) und `after` (Routenindex) sind Umwege, die die Wache pro Runde mit 50 % nimmt. Lichtzonen sind Rechtecke im Layer `lights` mit der float-Property `brightness` (0–1); alles außerhalb ist dunkel. Geräuschzonen sind Rechtecke im Layer `noise` mit den float-Properties `surface` (Standard 1) und `masking` (Standard 0). Zonen mit Namen sind über Schalter schaltbar.
 - `public/tilesets/` – Tileset-Bilder, gezeichnet wie unter voller Beleuchtung. Die Dunkelheit legt erst die Szene darüber.
 - `deploy/` – Server-Konfiguration, Deploy-Anleitung und lokaler Nachbau des Servers.
 
@@ -122,14 +145,15 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 ## Meilenstein 1: Prototyp
 
 **Umfang:**
-- Map: Fracht-Dock (dunkel, verwinkelt, 2er-Wachen) plus eine helle Glassektion als Abkürzung zur Extraktion
-- Beuten: Server-Block und Kryoprobe, beide gleichzeitig auf der Map, Spieler wählt vor Ort
+- Map: Fracht-Dock „Pier 9“ (Konzept in `docs/pier9.md`): dunkel, verwinkelt, 2er-Wachen, drei Rückwege, davon einer eine helle Glasgalerie als Abkürzung zur Extraktion
+- Beuten: Server-Block und Kryoprobe, beide gleichzeitig auf der Map, je zwei mögliche Plätze pro Lauf, Spieler wählt vor Ort. Dazu Nebenbeute ohne Regel (Frachtpapiere, Zollkasse)
+- Spieler-Verben: Takedown, Wurf, Verstecken, Schalten (siehe oben)
 - Beute-Wert pro Ziel (einfacher Zahlenwert, am Ende angezeigt)
 - Debug-Schalter: nur eine der beiden Beuten spawnen (nötig, um das Gate sauber zu testen)
 - Gadget: Wärmebild (feste Ausrüstung, keine Auswahl)
 - Systeme: Bewegung, Carry, Light, Noise, Thermal, Guard AI mit Paaren, Extraktion, Fail-State
 
-**Nicht im Umfang:** Briefing-Bildschirm, Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Koop, Social Stealth, Waffen außer Takedown.
+**Nicht im Umfang:** Briefing-Bildschirm, Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Türen, Sprinten, Verkleidung, Wegtragen von Wachen, Koop, Social Stealth, Waffen außer Takedown.
 
 **Reihenfolge:**
 1. Projekt-Setup, Command-Layer, Spieler bewegt sich top-down, Kollision mit Wänden, Testmap aus Tiled
@@ -138,3 +162,5 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 4. Noise-System + Guard AI (Patrouille, Hören, Sehen, Paare)
 5. Thermal-System, Wärmebild-Gadget, Kryoprobe, Wärmekamera (inkl. Glas blockiert Thermal)
 6. Extraktion, Fail-State, Beute-Wert-Anzeige, Debug-Overlay (Geräuschradien, Sichtkegel, Temperaturen), Debug-Schalter für Beuten-Spawn
+
+Schritte 1–6 sind auf der Testmap umgesetzt. Danach Pier 9 in sechs Stufen (`docs/pier9.md`): Rohbau und Netz · Wachen mit Gewohnheiten · Sensorik und Zonen · Verben · Zufall und Feinschliff mit Gate-Test · nach dem Gate: Alarmstufe, hörbare Wachenschritte.
