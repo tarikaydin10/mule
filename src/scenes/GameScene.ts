@@ -25,6 +25,7 @@ import { TICK_RATE } from '../systems/tick';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
 
 const LOCAL_PLAYER = 'p1';
+const DEFAULT_MAP = 'pier9';
 const WIDTH = 960;
 const HEIGHT = 540;
 // After a long stall (tab in background) the simulation catches up at most this far.
@@ -47,6 +48,8 @@ const THERMAL_AMBIENT_TINT = 0x303030;
 const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number }> = {
   serverBlock: { width: 26, height: 18, color: 0x5b8fd6 },
   cryoSample: { width: 12, height: 18, color: 0x8fe3f0 },
+  papers: { width: 14, height: 10, color: 0xe8e2c8 },
+  cashbox: { width: 16, height: 12, color: 0x9ab06a },
 };
 
 // Draw order: world, heat traces, view cones, loot, people, darkness, noise rings and objective.
@@ -67,6 +70,11 @@ const DEBUG_FONT = { fontFamily: 'Menlo, Consolas, monospace', fontSize: '11px',
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
+/** What the scene is started with: the map to load plus the simulation's options. */
+export interface SceneOptions extends GameOptions {
+  map?: string;
+}
+
 /**
  * Translates input into commands, runs the simulation in fixed ticks and draws the result.
  * No game state lives here: every view only mirrors `state`.
@@ -77,7 +85,7 @@ type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 export class GameScene extends Phaser.Scene {
   private level!: Level;
   private state!: GameState;
-  private options: GameOptions = {};
+  private options: SceneOptions = {};
   private keys!: WasdKeys;
   private pending: Command[] = [];
   private lastDirection: Direction = { x: 0, y: 0 };
@@ -111,21 +119,25 @@ export class GameScene extends Phaser.Scene {
     super('game');
   }
 
-  /** Receives the debug spawn switch when the scene restarts. */
-  init(options: GameOptions = {}): void {
+  /** Receives the map and the debug options on start and restart. */
+  init(options: SceneOptions = {}): void {
     this.options = options;
   }
 
+  private get mapKey(): string {
+    return this.options.map ?? DEFAULT_MAP;
+  }
+
   preload(): void {
-    this.load.tilemapTiledJSON('testmap', 'maps/testmap.json');
+    this.load.tilemapTiledJSON(this.mapKey, `maps/${this.mapKey}.json`);
     this.load.image('tiles-placeholder', 'tilesets/placeholder.png');
   }
 
   create(): void {
     // The simulation reads the raw Tiled JSON; Phaser only uses the same file for drawing.
-    const tiled = this.cache.tilemap.get('testmap') as { data: TiledMap } | undefined;
+    const tiled = this.cache.tilemap.get(this.mapKey) as { data: TiledMap } | undefined;
     if (!tiled) {
-      throw new Error('Map "testmap" is not loaded');
+      throw new Error(`Map "${this.mapKey}" is not loaded`);
     }
     this.level = parseLevel(tiled.data);
     this.state = createGameState(this.level, [LOCAL_PLAYER], this.options);
@@ -192,7 +204,7 @@ export class GameScene extends Phaser.Scene {
   // World
 
   private createWorld(): void {
-    const map = this.make.tilemap({ key: 'testmap' });
+    const map = this.make.tilemap({ key: this.mapKey });
     // First argument is the tileset name inside the Tiled file.
     const tileset = map.addTilesetImage('placeholder', 'tiles-placeholder');
     const ground = tileset ? map.createLayer('ground', tileset) : null;
@@ -238,6 +250,14 @@ export class GameScene extends Phaser.Scene {
         .setStrokeStyle(2, 0x5fd08a, 0.9)
         .setFillStyle(0x5fd08a, 0.12)
         .setDepth(DEPTH.noise);
+    }
+    for (const sign of this.level.signs) {
+      this.world(
+        this.add
+          .text(sign.x, sign.y, sign.text, { fontFamily: 'Arial, sans-serif', fontSize: '12px', color: '#d8dcc8' })
+          .setOrigin(0.5)
+          .setAlpha(0.85),
+      ).setDepth(DEPTH.loot);
     }
     // View cones and suspicion bars, redrawn every frame, under the darkness like everything in the world.
     this.overlay = this.world(this.add.graphics()).setDepth(DEPTH.cones);
@@ -589,9 +609,9 @@ export class GameScene extends Phaser.Scene {
       const kinds = Object.keys(LOOT) as LootKind[];
       const kind = kinds[Number(event.key) - 1];
       if (event.key === '0') {
-        this.scene.restart({});
+        this.scene.restart({ map: this.options.map });
       } else if (/^[1-9]$/.test(event.key) && kind) {
-        this.scene.restart({ onlyLoot: kind });
+        this.scene.restart({ map: this.options.map, onlyLoot: kind });
       }
     });
   }

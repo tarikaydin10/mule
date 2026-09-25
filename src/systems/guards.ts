@@ -45,12 +45,13 @@ const SEARCH_TURN_PER_SECOND = 1.6; // rad/s
 export function createGuards(level: Level): Record<string, GuardState> {
   const guards: Record<string, GuardState> = {};
   for (const spawn of level.guards) {
-    const [start, next] = spawn.route as [Vector2, Vector2];
+    const start = spawn.route[0] as Vector2;
+    const next = spawn.route[1] ?? start;
     guards[spawn.id] = {
       kind: spawn.kind,
       x: start.x,
       y: start.y,
-      facing: Math.atan2(next.y - start.y, next.x - start.x),
+      facing: spawn.post ? spawn.post.facing : Math.atan2(next.y - start.y, next.x - start.x),
       mode: 'patrol',
       suspicion: 0,
       routeIndex: 1,

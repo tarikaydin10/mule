@@ -95,7 +95,9 @@ describe('parseLevel loot', () => {
   const block = (kind: unknown) => ({ id: 7, name: 'rack', type: 'loot', x: 64, y: 16, properties: [{ name: 'kind', value: kind }] });
 
   it('reads loot objects with their kind and a stable id', () => {
-    expect(parseLevel(withObjects([block('serverBlock')])).loot).toEqual([{ id: 'loot-7', kind: 'serverBlock', x: 64, y: 16 }]);
+    expect(parseLevel(withObjects([block('serverBlock')])).loot).toEqual([
+      { id: 'loot-rack', kind: 'serverBlock', x: 64, y: 16, group: null, variant: 'A' },
+    ]);
   });
 
   it('fails loudly on an unknown loot kind', () => {
@@ -135,6 +137,10 @@ describe('parseLevel guards and noise zones', () => {
       kind: 'dockGuard',
       route: [{ x: 16, y: 16 }, { x: 80, y: 16 }],
       partner: 'guard-right',
+      waits: {},
+      chatPoints: [],
+      post: null,
+      detour: null,
     });
   });
 
@@ -182,6 +188,66 @@ describe('parseLevel thermal cameras', () => {
     expect(camera).toMatchObject({ id: 'camera-door', x: 40, y: 8, range: 280 });
     expect(camera?.facing).toBeCloseTo(Math.PI / 2);
     expect(camera?.fieldOfView).toBeCloseTo((70 * Math.PI) / 180);
+  });
+});
+
+describe('parseLevel objects of the second Pier 9 version', () => {
+  const withObjects = (objects: object[]): TiledMap => ({
+    ...tiledMap,
+    layers: tiledMap.layers.map((layer) =>
+      layer.name === 'objects' ? { ...layer, objects: [...(layer.objects ?? []), ...objects] } : layer,
+    ) as TiledMap['layers'],
+  });
+  const prop = (name: string, value: unknown) => ({ name, value });
+
+  it('reads loot groups and variants, defaulting to no group and variant A', () => {
+    const level = parseLevel(
+      withObjects([
+        { id: 1, name: 'block_a', type: 'loot', x: 10, y: 10, properties: [prop('kind', 'serverBlock'), prop('group', 'block'), prop('variant', 'A')] },
+        { id: 2, name: 'papers', type: 'loot', x: 20, y: 20, width: 16, height: 16, properties: [prop('kind', 'papers')] },
+      ]),
+    );
+    expect(level.loot).toEqual([
+      { id: 'loot-block_a', kind: 'serverBlock', x: 10, y: 10, group: 'block', variant: 'A' },
+      { id: 'loot-papers', kind: 'papers', x: 28, y: 28, group: null, variant: 'A' },
+    ]);
+  });
+
+  it('reads posts, waits, chat points and detours of guards', () => {
+    const level = parseLevel(
+      withObjects([
+        { id: 3, name: 'walker', type: 'guard', x: 16, y: 16, polyline: [{ x: 0, y: 0 }, { x: 64, y: 0 }, { x: 64, y: 32 }], properties: [prop('kind', 'dockGuard'), prop('wait', '1:6;2:3'), prop('chat', '0,2')] },
+        { id: 4, name: 'side', type: 'detour', x: 80, y: 16, polyline: [{ x: 0, y: 0 }, { x: 0, y: 32 }], properties: [prop('guard', 'walker'), prop('after', 1)] },
+        { id: 5, name: 'post', type: 'guard', x: 40, y: 40, properties: [prop('kind', 'dockGuard'), prop('facing', 90), prop('sweep', 60)] },
+      ]),
+    );
+    const [walker, post] = level.guards;
+    expect(walker).toMatchObject({ id: 'guard-walker', waits: { 1: 6, 2: 3 }, chatPoints: [0, 2], post: null });
+    expect(walker?.detour).toEqual({ after: 1, points: [{ x: 80, y: 16 }, { x: 80, y: 48 }] });
+    expect(post).toMatchObject({ id: 'guard-post', route: [{ x: 40, y: 40 }], waits: {}, chatPoints: [], detour: null });
+    expect(post?.post?.facing).toBeCloseTo(Math.PI / 2);
+    expect(post?.post?.sweep).toBeCloseTo(Math.PI / 3);
+  });
+
+  it('rejects invalid waits and chat points', () => {
+    const guard = (props: object[]) => ({ id: 3, name: 'w', type: 'guard', x: 0, y: 0, polyline: [{ x: 0, y: 0 }, { x: 32, y: 0 }], properties: [prop('kind', 'dockGuard'), ...props] });
+    expect(() => parseLevel(withObjects([guard([prop('wait', '5:2')])]))).toThrow('wait');
+    expect(() => parseLevel(withObjects([guard([prop('chat', '9')])]))).toThrow('chat');
+  });
+
+  it('reads hide spots, switches with alerted guards, and signs', () => {
+    const level = parseLevel(
+      withObjects([
+        { id: 6, name: 'hall', type: 'guard', x: 0, y: 0, polyline: [{ x: 0, y: 0 }, { x: 32, y: 0 }], properties: [prop('kind', 'dockGuard')] },
+        { id: 7, name: 'crate', type: 'hideSpot', x: 32, y: 32, width: 32, height: 32 },
+        { id: 8, name: 'lights', type: 'switch', x: 5, y: 6, properties: [prop('target', 'gallery'), prop('alerts', 'hall')] },
+        { id: 9, name: 'Zoll →', type: 'sign', x: 1, y: 2 },
+      ]),
+    );
+    expect(level.hideSpots).toEqual([{ id: 'hide-crate', name: 'crate', x: 48, y: 48 }]);
+    expect(level.switches).toEqual([{ id: 'switch-lights', name: 'lights', x: 5, y: 6, target: 'gallery', alerts: ['guard-hall'] }]);
+    expect(level.signs).toEqual([{ text: 'Zoll →', x: 1, y: 2 }]);
+    expect(() => parseLevel(withObjects([{ id: 8, name: 's', type: 'switch', x: 0, y: 0, properties: [prop('target', 'x'), prop('alerts', 'nobody')] }]))).toThrow('unknown guard');
   });
 });
 

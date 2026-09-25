@@ -1,4 +1,6 @@
-import type { Level } from './level';
+import type { GuardSpawn, Level, LootSpawn } from './level';
+import type { LootKind } from './loot';
+import type { Vector2 } from './movement';
 
 /**
  * Builds a level from rows of text for tests: '#' is a wall, 'G' is glass, '.' is free.
@@ -28,5 +30,18 @@ export function levelFromRows(rows: string[], tileSize = 32): Level {
     guards: [],
     extraction: null,
     thermalCameras: [],
+    hideSpots: [],
+    switches: [],
+    signs: [],
   };
+}
+
+/** A patrol guard spawn with the defaults tests rarely care about. */
+export function guardSpawn(id: string, route: Vector2[], extra: Partial<GuardSpawn> = {}): GuardSpawn {
+  return { id, kind: 'dockGuard', route, partner: null, waits: {}, chatPoints: [], post: null, detour: null, ...extra };
+}
+
+/** A loot spawn outside any group, so it always spawns. */
+export function lootSpawn(id: string, kind: LootKind, x: number, y: number): LootSpawn {
+  return { id, kind, x, y, group: null, variant: 'A' };
 }

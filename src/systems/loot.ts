@@ -30,7 +30,7 @@ export const LOOT = {
     temperature: 0.3,
     thawPerSecond: 0,
   },
-  // Cold at first; thermal cameras see it after about 30 s, it is lost after about 60 s.
+  // Cold at first; thermal cameras see it after about 24 s, it is lost after 50 s.
   cryoSample: {
     name: 'Kryoprobe',
     speedMultiplier: 1,
@@ -38,7 +38,26 @@ export const LOOT = {
     dropNoiseRadius: 60,
     value: 7000,
     temperature: 0.03,
-    thawPerSecond: 0.97 / 60,
+    thawPerSecond: 0.97 / 50,
+  },
+  // Side loot: value only, no rule of its own.
+  papers: {
+    name: 'Frachtpapiere',
+    speedMultiplier: 1,
+    handsFree: true,
+    dropNoiseRadius: 30,
+    value: 800,
+    temperature: 0.3,
+    thawPerSecond: 0,
+  },
+  cashbox: {
+    name: 'Zollkasse',
+    speedMultiplier: 1,
+    handsFree: true,
+    dropNoiseRadius: 120,
+    value: 1200,
+    temperature: 0.3,
+    thawPerSecond: 0,
   },
 } as const satisfies Record<string, LootDefinition>;
 

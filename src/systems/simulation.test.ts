@@ -21,7 +21,7 @@ import {
   type Command,
   type GameState,
 } from './simulation';
-import { levelFromRows } from './testLevel';
+import { guardSpawn, levelFromRows, lootSpawn } from './testLevel';
 
 const level = levelFromRows([
   '#######',
@@ -98,7 +98,7 @@ describe('step', () => {
 
 describe('carrying loot', () => {
   // The server block lies 30 px right of the spawn, within reach.
-  const withBlock = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 142, y: 80 }] };
+  const withBlock = { ...level, loot: [lootSpawn('block', 'serverBlock', 142, 80)] };
   const pickUp: Command = { type: 'pickUp', playerId: 'p1' };
   const drop: Command = { type: 'drop', playerId: 'p1' };
   const start = () => createGameState(withBlock, ['p1']);
@@ -112,7 +112,7 @@ describe('carrying loot', () => {
 
   it('finds loot within reach and ignores loot beyond it', () => {
     expect(lootInReach(start(), 'p1')).toBe('block');
-    const far = createGameState({ ...withBlock, loot: [{ id: 'block', kind: 'serverBlock', x: 112 + PICKUP_REACH + 1, y: 80 }] }, ['p1']);
+    const far = createGameState({ ...withBlock, loot: [lootSpawn('block', 'serverBlock', 112 + PICKUP_REACH + 1, 80)] }, ['p1']);
     expect(lootInReach(far, 'p1')).toBeNull();
     expect(applyCommand(far, pickUp, withBlock)).toBe(far);
   });
@@ -143,7 +143,7 @@ describe('carrying loot', () => {
 
   it('carries only one thing: picking up with full hands does nothing', () => {
     const two = createGameState(
-      { ...withBlock, loot: [...withBlock.loot, { id: 'second', kind: 'serverBlock', x: 120, y: 80 }] },
+      { ...withBlock, loot: [...withBlock.loot, lootSpawn('second', 'serverBlock', 120, 80)] },
       ['p1'],
     );
     const carrying = applyCommand(two, pickUp, withBlock);
@@ -200,7 +200,7 @@ describe('noise', () => {
   });
 
   it('makes a loud sound when heavy loot is put down', () => {
-    const withBlock = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 112, y: 80 }] };
+    const withBlock = { ...level, loot: [lootSpawn('block', 'serverBlock', 112, 80)] };
     const carrying = step(createGameState(withBlock, ['p1']), [{ type: 'pickUp', playerId: 'p1' }], withBlock);
     const dropped = step(carrying, [{ type: 'drop', playerId: 'p1' }], withBlock);
     expect(dropped.events).toContainEqual({ type: 'noise:emitted', x: 112, y: 80, radius: LOOT.serverBlock.dropNoiseRadius });
@@ -213,8 +213,8 @@ describe('extraction and outcome', () => {
     ...level,
     extraction: { x: 32, y: 32, width: 32, height: 96 },
     loot: [
-      { id: 'inside', kind: 'serverBlock' as const, x: 48, y: 48 },
-      { id: 'outside', kind: 'serverBlock' as const, x: 144, y: 80 },
+      lootSpawn('inside', 'serverBlock', 48, 48),
+      lootSpawn('outside', 'serverBlock', 144, 80),
     ],
   };
   const extract: Command = { type: 'extract', playerId: 'p1' };
@@ -256,7 +256,7 @@ describe('extraction and outcome', () => {
       kind: 'dockGuard' as const, x: 112 + CATCH_DISTANCE - 1, y: 80, facing: Math.PI, mode: 'alarm' as const,
       suspicion: 1, routeIndex: 0, path: [], target: null, searchTicks: 0,
     };
-    const guardLevel = { ...level, guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 150, y: 80 }, { x: 180, y: 80 }], partner: null }] };
+    const guardLevel = { ...level, guards: [guardSpawn('g', [{ x: 150, y: 80 }, { x: 180, y: 80 }], { partner: null })] };
     expect(step({ ...state, guards: { g: guard } }, [], guardLevel).outcome).toEqual({ result: 'caught' });
   });
 
@@ -266,7 +266,7 @@ describe('extraction and outcome', () => {
   });
 
   it('spawns only one kind of loot when the debug switch asks for it', () => {
-    const mixed = { ...level, loot: [{ id: 'a', kind: 'serverBlock' as const, x: 50, y: 50 }] };
+    const mixed = { ...level, loot: [lootSpawn('a', 'serverBlock', 50, 50)] };
     expect(Object.keys(createGameState(mixed, ['p1'], { onlyLoot: 'serverBlock' }).loot)).toEqual(['a']);
   });
 });
@@ -275,8 +275,8 @@ describe('thermal', () => {
   const lootLevel = {
     ...level,
     loot: [
-      { id: 'probe', kind: 'cryoSample' as const, x: 112, y: 80 },
-      { id: 'block', kind: 'serverBlock' as const, x: 144, y: 80 },
+      lootSpawn('probe', 'cryoSample', 112, 80),
+      lootSpawn('block', 'serverBlock', 144, 80),
     ],
   };
   const pickUp: Command = { type: 'pickUp', playerId: 'p1' };
@@ -315,13 +315,13 @@ describe('thermal', () => {
   });
 
   it('keeps the server block at room temperature', () => {
-    const blockOnly = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 112, y: 80 }] };
+    const blockOnly = { ...level, loot: [lootSpawn('block', 'serverBlock', 112, 80)] };
     const state = ticks(step(createGameState(blockOnly, ['p1']), [pickUp], blockOnly), 5 * TICK_RATE, blockOnly);
     expect(state.loot.block?.temperature).toBe(LOOT.serverBlock.temperature);
   });
 
   it('switches thermal vision only with free hands, and two-handed loot switches it off', () => {
-    const blockOnly = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 112, y: 80 }] };
+    const blockOnly = { ...level, loot: [lootSpawn('block', 'serverBlock', 112, 80)] };
     let state = applyCommand(createGameState(blockOnly, ['p1']), toggle, blockOnly);
     expect(state.players.p1?.thermalVision).toBe(true);
     state = applyCommand(state, pickUp, blockOnly);
@@ -357,7 +357,7 @@ describe('thermal', () => {
       ...level,
       thermalCameras: [{ id: 'cam', x: 48, y: 80, facing: 0, fieldOfView: Math.PI / 2, range: 300 }],
       // The guard walks right through the camera's view.
-      guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 90, y: 80 }, { x: 180, y: 80 }], partner: null }],
+      guards: [guardSpawn('g', [{ x: 90, y: 80 }, { x: 180, y: 80 }], { partner: null })],
     };
     // No players, so nothing but the guard is warm in view.
     const state = ticks(createGameState(camLevel, []), 2 * TICK_RATE, camLevel);
@@ -370,8 +370,8 @@ describe('thermal', () => {
     const camLevel = {
       ...level,
       thermalCameras: [{ id: 'cam', x: 48, y: 80, facing: 0, fieldOfView: Math.PI / 2, range: 300 }],
-      guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 176, y: 48 }, { x: 176, y: 112 }], partner: null }],
-      loot: [{ id: 'probe', kind: 'cryoSample' as const, x: 112, y: 80 }],
+      guards: [guardSpawn('g', [{ x: 176, y: 48 }, { x: 176, y: 112 }], { partner: null })],
+      loot: [lootSpawn('probe', 'cryoSample', 112, 80)],
     };
     let state = createGameState(camLevel, ['p1']);
     state = { ...state, loot: { probe: { ...(state.loot.probe as NonNullable<typeof state.loot.probe>), temperature: 0.8 } } };

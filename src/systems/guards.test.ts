@@ -4,7 +4,7 @@ import { createGuards, sightStrength, updateGuards, type GuardState } from './gu
 import { GUARDS } from './guardTypes';
 import type { Level } from './level';
 import type { Vector2 } from './movement';
-import { levelFromRows } from './testLevel';
+import { guardSpawn, levelFromRows } from './testLevel';
 import { TICK_RATE } from './tick';
 
 // A 14 x 8 hall with a pillar at tile (7, 3); 32 px tiles.
@@ -27,9 +27,9 @@ function hall(options: { lit?: boolean; partner?: boolean } = {}): Level {
     ...base,
     lights: options.lit === false ? [] : everywhereLit,
     guards: [
-      { id: 'a', kind: 'dockGuard', route: [tile(2, 5), tile(11, 5)], partner: options.partner ? 'b' : null },
+      guardSpawn('a', [tile(2, 5), tile(11, 5)], { partner: options.partner ? 'b' : null }),
       ...(options.partner
-        ? [{ id: 'b', kind: 'dockGuard' as const, route: [tile(2, 1), tile(11, 1)], partner: 'a' }]
+        ? [guardSpawn('b', [tile(2, 1), tile(11, 1)], { partner: 'a' })]
         : []),
     ],
   };
