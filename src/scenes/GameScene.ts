@@ -61,6 +61,7 @@ const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
   investigate: { body: 0xe07b39, cone: 0xf0a060 },
   search: { body: 0xe07b39, cone: 0xf0a060 },
   alarm: { body: 0xd8433a, cone: 0xff5a4a },
+  down: { body: 0x5a5f66, cone: 0x5a5f66 },
 };
 const THERMAL_CAMERA_COLOR = 0x7fc8e6;
 const NOISE_RING_MS = 450;

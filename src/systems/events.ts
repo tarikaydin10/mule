@@ -10,4 +10,6 @@ export type GameEvent =
   /** A thermal camera registered heat; every guard goes on alarm towards the spot. */
   | { type: 'sensor:alarm'; cameraId: string; x: number; y: number }
   /** Loot was destroyed, like a fully thawed cryo sample. */
-  | { type: 'loot:lost'; lootId: string; x: number; y: number };
+  | { type: 'loot:lost'; lootId: string; x: number; y: number }
+  /** A switch was used; the named guards go to look at it. */
+  | { type: 'switch:used'; switchId: string; zone: string; on: boolean; x: number; y: number; alerts: string[] };

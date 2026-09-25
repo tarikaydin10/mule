@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createGuards } from './guards';
 import { LOOT } from './loot';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS } from './noise';
 import { HEAT_TRACE_TEMPERATURE, PLAYER_TEMPERATURE } from './thermal';
@@ -37,6 +38,8 @@ describe('createGameState', () => {
     const state = createGameState(level, ['p1']);
     expect(state).toEqual({
       tick: 0,
+      seed: 0,
+      fixed: false,
       players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0, thermalVision: false } },
       loot: {},
       guards: {},
@@ -252,11 +255,8 @@ describe('extraction and outcome', () => {
 
   it('is caught when a guard on alarm reaches the player', () => {
     const state = createGameState(level, ['p1']);
-    const guard = {
-      kind: 'dockGuard' as const, x: 112 + CATCH_DISTANCE - 1, y: 80, facing: Math.PI, mode: 'alarm' as const,
-      suspicion: 1, routeIndex: 0, path: [], target: null, searchTicks: 0,
-    };
     const guardLevel = { ...level, guards: [guardSpawn('g', [{ x: 150, y: 80 }, { x: 180, y: 80 }], { partner: null })] };
+    const guard = { ...createGuards(guardLevel).g!, x: 112 + CATCH_DISTANCE - 1, y: 80, facing: Math.PI, mode: 'alarm' as const, suspicion: 1 };
     expect(step({ ...state, guards: { g: guard } }, [], guardLevel).outcome).toEqual({ result: 'caught' });
   });
 

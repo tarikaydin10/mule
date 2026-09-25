@@ -1,11 +1,12 @@
 import { moveAndCollide } from './collision';
 import type { GameEvent } from './events';
-import { createGuards, updateGuards, type GuardState } from './guards';
+import { createGuards, updateGuards, type GuardContext, type GuardState } from './guards';
 import { GUARDS } from './guardTypes';
 import { insideRect, type Level } from './level';
 import { LOOT, type LootKind } from './loot';
 import { computeVelocity, STILL, type Direction, type Vector2 } from './movement';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius } from './noise';
+import { pick } from './random';
 import { createCameras, updateCameras, type CameraState } from './sensors';
 import { addTrace, coolTraces, PLAYER_TEMPERATURE, type HeatSource, type HeatTrace } from './thermal';
 import { TICK_SECONDS } from './tick';
@@ -18,6 +19,10 @@ export { TICK_RATE, TICK_SECONDS } from './tick';
  */
 export interface GameState {
   tick: number;
+  /** Seed of this run's random choices; the same on every host. */
+  seed: number;
+  /** Debug: no random choices, first variant everywhere, so runs are comparable. */
+  fixed: boolean;
   players: Record<string, PlayerState>;
   loot: Record<string, LootState>;
   guards: Record<string, GuardState>;
@@ -88,9 +93,16 @@ const NO_MODIFIERS: Modifiers = { speedMultiplier: 1, handsFree: true };
 export interface GameOptions {
   /** Debug switch: spawn only loot of this kind, to compare runs with a single target. */
   onlyLoot?: LootKind;
+  /** Debug switch: no random choices, first variant of everything. */
+  fixed?: boolean;
+  /** Seed of the run; a fixed run uses 1 when none is given. */
+  seed?: number;
 }
 
 export function createGameState(level: Level, playerIds: string[], options: GameOptions = {}): GameState {
+  const fixed = options.fixed ?? false;
+  const seed = (options.seed ?? (fixed ? 1 : 0)) >>> 0;
+  const context: GuardContext = { seed, tick: 0, fixed };
   const players: Record<string, PlayerState> = {};
   for (const id of playerIds) {
     players[id] = { x: level.spawn.x, y: level.spawn.y, direction: STILL, stepTicks: 0, thermalVision: false };
@@ -98,6 +110,9 @@ export function createGameState(level: Level, playerIds: string[], options: Game
   const loot: Record<string, LootState> = {};
   for (const spawn of level.loot) {
     if (options.onlyLoot && spawn.kind !== options.onlyLoot) {
+      continue;
+    }
+    if (spawn.group !== null && spawn.variant !== chosenVariant(level, spawn.group, seed, fixed)) {
       continue;
     }
     loot[spawn.id] = {
@@ -111,14 +126,22 @@ export function createGameState(level: Level, playerIds: string[], options: Game
   }
   return {
     tick: 0,
+    seed,
+    fixed,
     players,
     loot,
-    guards: createGuards(level),
+    guards: createGuards(level, context),
     cameras: createCameras(level),
     heatTraces: [],
     events: [],
     outcome: null,
   };
+}
+
+/** The variant of a loot group that spawns this run: the first when fixed, else drawn from the seed. */
+export function chosenVariant(level: Level, group: string, seed: number, fixed: boolean): string {
+  const variants = [...new Set(level.loot.filter((l) => l.group === group).map((l) => l.variant))].sort();
+  return fixed ? (variants[0] as string) : pick(seed, `loot:${group}`, variants);
 }
 
 /** Id of the loot the player carries, or null. */
@@ -292,7 +315,11 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
   events.push(...cameras.events);
 
   const partnerAlerts = state.events.filter((event) => event.type === 'guard:alerted');
-  const guards = updateGuards(commanded.guards, Object.values(players), level, [...events, ...partnerAlerts]);
+  const guards = updateGuards(commanded.guards, Object.values(players), level, [...events, ...partnerAlerts], {
+    seed: commanded.seed,
+    tick: commanded.tick,
+    fixed: commanded.fixed,
+  });
 
   const caught = Object.values(guards.guards).some(
     (guard) =>
@@ -302,6 +329,8 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
 
   return {
     tick: commanded.tick + 1,
+    seed: commanded.seed,
+    fixed: commanded.fixed,
     players,
     loot,
     guards: guards.guards,

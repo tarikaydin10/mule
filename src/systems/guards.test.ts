@@ -1,6 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { GameEvent } from './events';
-import { createGuards, sightStrength, updateGuards, type GuardState } from './guards';
+import {
+  ALERT_SECONDS,
+  CHAT_SECONDS,
+  createGuards,
+  knockOut,
+  LOST_SECONDS,
+  sightStrength,
+  updateGuards,
+  type GuardContext,
+  type GuardState,
+} from './guards';
 import { GUARDS } from './guardTypes';
 import type { Level } from './level';
 import type { Vector2 } from './movement';
@@ -36,13 +46,20 @@ function hall(options: { lit?: boolean; partner?: boolean } = {}): Level {
 }
 
 /** Runs the guards for a number of ticks against fixed targets and collects all events. */
-function run(level: Level, ticks: number, targets: Vector2[] = [], start = createGuards(level), extra: GameEvent[] = []) {
+function run(
+  level: Level,
+  ticks: number,
+  targets: Vector2[] = [],
+  start = createGuards(level),
+  extra: GameEvent[] = [],
+  context: GuardContext = { seed: 0, tick: 0, fixed: true },
+) {
   let guards = start;
   let previous: GameEvent[] = [];
   const all: GameEvent[] = [];
   for (let i = 0; i < ticks; i++) {
     const incoming = [...(i === 0 ? extra : []), ...previous];
-    const result = updateGuards(guards, targets, level, incoming);
+    const result = updateGuards(guards, targets, level, incoming, { ...context, tick: context.tick + i });
     guards = result.guards;
     previous = result.events;
     all.push(...result.events);
@@ -151,13 +168,16 @@ describe('hearing', () => {
 });
 
 describe('pairs', () => {
-  it('sends the partner to the same spot when one guard becomes suspicious', () => {
+  it('splits the search: the partner goes halfway and keeps the other in sight', () => {
     const level = hall({ partner: true });
     const noise: GameEvent = { type: 'noise:emitted', ...tile(3, 6), radius: 60 }; // only guard a hears it
     const { guards } = run(level, 2, [], undefined, [noise]);
     expect(guards.a?.mode).toBe('investigate');
+    expect(guards.a?.target).toEqual(tile(3, 6));
     expect(guards.b?.mode).toBe('investigate');
-    expect(guards.b?.target).toEqual(tile(3, 6));
+    const b = createGuards(level).b as GuardState;
+    expect(guards.b?.target?.y).toBe((b.y + tile(3, 6).y) / 2);
+    expect(Math.abs((guards.b?.target?.x ?? 0) - (b.x + tile(3, 6).x) / 2)).toBeLessThan(2);
   });
 
   it('puts the partner on alarm when one guard raises it', () => {
@@ -172,5 +192,138 @@ describe('guard state', () => {
   it('stays JSON-serializable', () => {
     const { guards } = run(hall({ partner: true }), 90, [tile(9, 5)]);
     expect(JSON.parse(JSON.stringify(guards))).toEqual(guards);
+  });
+});
+
+describe('habits', () => {
+  it('stops at route points with a wait, and at the chat point of the run', () => {
+    const level = hall();
+    const spawn = level.guards[0] as NonNullable<Level['guards'][0]>;
+    spawn.waits = { 1: 2 };
+    spawn.chatPoints = [0];
+    // From (2,5) to (11,5): 9 tiles at 2.19 tiles/s = about 4.1 s, then 2 s wait at index 1.
+    const arrive = Math.ceil((9 * 32) / GUARDS.dockGuard.patrolSpeed * TICK_RATE) + 2;
+    const atPoint = guardA(run(level, arrive).guards);
+    expect(atPoint.waitTicks).toBeGreaterThan(0);
+    expect(atPoint.x).toBeCloseTo(tile(11, 5).x, 0);
+    const later = guardA(run(level, arrive + TICK_RATE, [], undefined).guards);
+    expect(later.waitTicks).toBeGreaterThan(0); // still within the 2 s
+    const gone = guardA(run(level, arrive + 2 * TICK_RATE + 5).guards);
+    expect(gone.waitTicks).toBe(0);
+    expect(gone.x).toBeLessThan(tile(11, 5).x);
+    // The chat point is index 0 in a fixed run; the guard stops there for CHAT_SECONDS when it comes back.
+    const back = arrive + 2 * TICK_RATE + Math.ceil((9 * 32) / GUARDS.dockGuard.patrolSpeed * TICK_RATE) + 2;
+    expect(guardA(run(level, back).guards).waitTicks).toBeCloseTo(CHAT_SECONDS * TICK_RATE, -1);
+  });
+
+  it('draws the chat point from the seed, the same for both guards of a pair', () => {
+    const level = hall({ partner: true });
+    for (const guard of level.guards) {
+      guard.chatPoints = [0, 1];
+    }
+    const picks = new Set<number>();
+    for (let seed = 1; seed <= 20; seed++) {
+      const guards = createGuards(level, { seed, tick: 0, fixed: false });
+      expect(guards.a?.chatIndex).toBe(guards.b?.chatIndex);
+      picks.add(guards.a?.chatIndex as number);
+    }
+    expect(picks).toEqual(new Set([0, 1]));
+    expect(createGuards(level).a?.chatIndex).toBe(0);
+  });
+
+  it('sweeps a post over its arc and returns to it after investigating', () => {
+    const base = levelFromRows(rows);
+    const level: Level = {
+      ...base,
+      lights: everywhereLit,
+      guards: [{ ...guardSpawn('p', [tile(6, 5)]), post: { facing: 0, sweep: Math.PI / 2 } }],
+    };
+    const facings = new Set<number>();
+    let guards = createGuards(level);
+    for (let i = 0; i < 6 * TICK_RATE; i++) {
+      guards = updateGuards(guards, [], level, []).guards;
+      facings.add(Math.round((guards.p?.facing ?? 0) * 100));
+    }
+    const values = [...facings].map((f) => f / 100);
+    expect(Math.max(...values)).toBeCloseTo(Math.PI / 4, 1);
+    expect(Math.min(...values)).toBeCloseTo(-Math.PI / 4, 1);
+    expect(guards.p).toMatchObject({ x: tile(6, 5).x, y: tile(6, 5).y, mode: 'patrol' });
+    // A noise sends it off; afterwards it walks back to its post.
+    const noise: GameEvent = { type: 'noise:emitted', ...tile(2, 5), radius: 200 };
+    let sent = updateGuards(guards, [], level, [noise]).guards;
+    expect(sent.p?.mode).toBe('investigate');
+    for (let i = 0; i < 12 * TICK_RATE; i++) {
+      sent = updateGuards(sent, [], level, []).guards;
+    }
+    expect(sent.p?.mode).toBe('patrol');
+    expect(Math.hypot((sent.p?.x ?? 0) - tile(6, 5).x, (sent.p?.y ?? 0) - tile(6, 5).y)).toBeLessThan(2);
+  });
+
+  it('ends a chase when the target is lost: search, then patrol on edge', () => {
+    const level = hall();
+    const target = tile(9, 5);
+    let guards = run(level, 3 * TICK_RATE, [target]).guards;
+    expect(guardA(guards).mode).toBe('alarm');
+    // The target vanishes; the guard reaches the last known spot and loses the trail.
+    guards = run(level, (LOST_SECONDS + 3) * TICK_RATE, [], guards).guards;
+    expect(guardA(guards).mode).toBe('search');
+    guards = run(level, (GUARDS.dockGuard.searchSeconds + 1) * TICK_RATE, [], guards).guards;
+    expect(guardA(guards).mode).toBe('patrol');
+    expect(guardA(guards).alertTicks).toBeGreaterThan((ALERT_SECONDS - 10) * TICK_RATE);
+  });
+
+  it('sees wider and gets suspicious faster while on edge', () => {
+    const level = hall();
+    const calm = guardA(createGuards(level));
+    const edgy = { ...calm, alertTicks: 100 };
+    // Just outside the normal 100 degree cone: 55 degrees off centre, upwards into open floor.
+    const off = { x: calm.x + 100 * Math.cos(-0.96), y: calm.y + 100 * Math.sin(-0.96) };
+    expect(sightStrength(level, calm, off)).toBe(0);
+    expect(sightStrength(level, edgy, off)).toBeGreaterThan(0);
+    const ahead = { x: calm.x + 100, y: calm.y };
+    const calmAfter = run(level, 10, [ahead]).guards;
+    const edgyAfter = run(level, 10, [ahead], { a: edgy }).guards;
+    expect(guardA(edgyAfter).suspicion).toBeGreaterThan(guardA(calmAfter).suspicion);
+  });
+
+  it('knocks a guard out, alerts its partner, and raises the alarm when the body is found', () => {
+    const level = hall({ partner: true });
+    const { guards: after, event } = knockOut(createGuards(level), 'a');
+    expect(after.a?.mode).toBe('down');
+    expect(event).toEqual({ type: 'guard:alerted', guardId: 'a', alarm: true, x: after.a?.x, y: after.a?.y });
+    const reacted = run(level, 1, [], after, event ? [event] : []).guards;
+    expect(reacted.b?.mode).toBe('alarm');
+    expect(reacted.a?.mode).toBe('down');
+
+    // A third guard walking past the body finds it.
+    const finder: Level = {
+      ...level,
+      guards: [...level.guards, guardSpawn('c', [tile(2, 6), tile(11, 6)])],
+    };
+    const down = knockOut(createGuards(finder), 'a').guards;
+    const { guards: found, events } = updateGuards({ ...down, c: { ...(down.c as GuardState), x: tile(4, 5).x, y: tile(4, 5).y, facing: Math.PI } }, [], finder, []);
+    expect(found.c?.mode).toBe('alarm');
+    expect(found.a?.found).toBe(true);
+    expect(events).toContainEqual({ type: 'guard:alerted', guardId: 'c', alarm: true, x: down.a?.x, y: down.a?.y });
+  });
+
+  it('takes its detour on some loops, never in a fixed run', () => {
+    const base = levelFromRows(rows);
+    const spawn = guardSpawn('d', [tile(2, 5), tile(6, 5)], { detour: { after: 1, points: [tile(6, 2)] } });
+    const level: Level = { ...base, lights: everywhereLit, guards: [spawn] };
+    const visitsTop = (seed: number, fixed: boolean) => {
+      let guards = createGuards(level, { seed, tick: 0, fixed });
+      let top = false;
+      for (let i = 0; i < 20 * TICK_RATE; i++) {
+        guards = updateGuards(guards, [], level, [], { seed, tick: i, fixed }).guards;
+        if ((guards.d?.y ?? 999) < tile(3, 5).y) {
+          top = true;
+        }
+      }
+      return top;
+    };
+    expect(visitsTop(1, true)).toBe(false);
+    const seeds = Array.from({ length: 8 }, (_, i) => visitsTop(i + 1, false));
+    expect(seeds).toContain(true);
   });
 });
