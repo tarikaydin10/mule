@@ -157,6 +157,8 @@ function updateGuard(
   const partnerAlert = events.find(
     (e): e is Extract<GameEvent, { type: 'guard:alerted' }> => e.type === 'guard:alerted' && e.guardId === spawn.partner,
   );
+  // A thermal camera going off puts every guard on alarm.
+  const sensorAlarm = events.find((e): e is Extract<GameEvent, { type: 'sensor:alarm' }> => e.type === 'sensor:alarm');
 
   // Decision
   const calm = state.mode === 'patrol';
@@ -164,8 +166,9 @@ function updateGuard(
     state = goTo({ ...state, mode: 'alarm' }, seenAt, level);
     alert = { type: 'guard:alerted', guardId: id, alarm: true, ...seenAt };
   } else if (state.mode === 'alarm') {
-    if (seenAt) {
-      state = goTo(state, seenAt, level);
+    const lead = seenAt ?? sensorAlarm;
+    if (lead) {
+      state = goTo(state, lead, level);
     }
   } else if (seenAt ?? heard) {
     const spot = (seenAt ?? heard) as Vector2;
@@ -173,6 +176,8 @@ function updateGuard(
     if (calm) {
       alert = { type: 'guard:alerted', guardId: id, alarm: false, ...spot };
     }
+  } else if (sensorAlarm) {
+    state = goTo({ ...state, mode: 'alarm' }, sensorAlarm, level);
   } else if (partnerAlert && (partnerAlert.alarm || calm)) {
     // Reacting to the partner raises no alert of its own, so a pair cannot echo forever.
     state = goTo({ ...state, mode: partnerAlert.alarm ? 'alarm' : 'investigate' }, partnerAlert, level);

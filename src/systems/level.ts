@@ -28,6 +28,20 @@ export interface Level {
   /** Where players leave the map with their loot, or null in levels without one. */
   extraction: Rect | null;
   guards: GuardSpawn[];
+  thermalCameras: ThermalCameraSpawn[];
+}
+
+/** A fixed thermal camera; it registers heat, not light. */
+export interface ThermalCameraSpawn {
+  id: string;
+  x: number;
+  y: number;
+  /** Viewing direction in radians (0 is right, positive turns clockwise). */
+  facing: number;
+  /** Full opening angle in radians. */
+  fieldOfView: number;
+  /** px */
+  range: number;
 }
 
 export interface NoiseZone extends Rect {
@@ -129,7 +143,33 @@ export function parseLevel(map: TiledMap): Level {
     noiseZones: parseNoiseZones(map.layers.find((layer) => layer.name === 'noise' && layer.type === 'objectgroup')),
     guards: parseGuards(objects),
     extraction: parseExtraction(objects),
+    thermalCameras: parseThermalCameras(objects),
   };
+}
+
+/**
+ * Point objects of type "thermalCamera" in the layer "objects". Float properties: "angle" in degrees
+ * (0 is right, 90 is down), optional "fov" in degrees (default 70) and "range" in px (default 280).
+ */
+function parseThermalCameras(objects: TiledObject[]): ThermalCameraSpawn[] {
+  return objects
+    .filter((obj) => obj.type === 'thermalCamera')
+    .map((obj) => {
+      const angle = property(obj, 'angle');
+      const fov = property(obj, 'fov') ?? 70;
+      const range = property(obj, 'range') ?? 280;
+      if (typeof angle !== 'number' || typeof fov !== 'number' || typeof range !== 'number') {
+        throw new Error(`Thermal camera "${obj.name}" needs a number property "angle" (and numbers for "fov" and "range")`);
+      }
+      return {
+        id: `camera-${obj.name}`,
+        x: obj.x,
+        y: obj.y,
+        facing: (angle * Math.PI) / 180,
+        fieldOfView: (fov * Math.PI) / 180,
+        range,
+      };
+    });
 }
 
 /** The rectangle object of type "extraction" in the layer "objects"; at most one. */

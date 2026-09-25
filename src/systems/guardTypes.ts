@@ -15,6 +15,8 @@ export interface GuardDefinition {
   suspicionPerSecond: number;
   /** How long the guard looks around at a spot before going back to the route. */
   searchSeconds: number;
+  /** Body heat, 0 to 1: guards show up bright in thermal vision. */
+  temperature: number;
 }
 
 export const GUARDS = {
@@ -28,6 +30,7 @@ export const GUARDS = {
     hearing: 1,
     suspicionPerSecond: 1.5,
     searchSeconds: 4,
+    temperature: 0.85,
   },
 } as const satisfies Record<string, GuardDefinition>;
 

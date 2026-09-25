@@ -6,4 +6,8 @@ export type GameEvent =
   /** A sound anyone within `radius` can hear. The radius already includes floor and masking. */
   | { type: 'noise:emitted'; x: number; y: number; radius: number }
   /** A guard became suspicious of a spot or raised the alarm; its partner reacts next tick. */
-  | { type: 'guard:alerted'; guardId: string; alarm: boolean; x: number; y: number };
+  | { type: 'guard:alerted'; guardId: string; alarm: boolean; x: number; y: number }
+  /** A thermal camera registered heat; every guard goes on alarm towards the spot. */
+  | { type: 'sensor:alarm'; cameraId: string; x: number; y: number }
+  /** Loot was destroyed, like a fully thawed cryo sample. */
+  | { type: 'loot:lost'; lootId: string; x: number; y: number };

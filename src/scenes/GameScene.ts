@@ -37,6 +37,7 @@ const NEAR_ERASE = 0.45; // applied twice, at the full and at 60 % of NEAR_RADIU
 // Placeholder look per loot kind: size in px and fill colour.
 const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number }> = {
   serverBlock: { width: 26, height: 18, color: 0x5b8fd6 },
+  cryoSample: { width: 12, height: 18, color: 0x8fe3f0 },
 };
 
 // Draw order: world, view cones, loot, people, darkness, noise rings and objective, text.

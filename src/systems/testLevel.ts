@@ -27,5 +27,6 @@ export function levelFromRows(rows: string[], tileSize = 32): Level {
     noiseZones: [],
     guards: [],
     extraction: null,
+    thermalCameras: [],
   };
 }

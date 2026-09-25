@@ -168,6 +168,23 @@ describe('parseLevel extraction', () => {
   });
 });
 
+describe('parseLevel thermal cameras', () => {
+  it('reads cameras with angle in degrees and defaults for fov and range', () => {
+    const map: TiledMap = {
+      ...tiledMap,
+      layers: tiledMap.layers.map((layer) =>
+        layer.name === 'objects'
+          ? { ...layer, objects: [...(layer.objects ?? []), { name: 'door', type: 'thermalCamera', x: 40, y: 8, properties: [{ name: 'angle', value: 90 }] }] }
+          : layer,
+      ) as TiledMap['layers'],
+    };
+    const [camera] = parseLevel(map).thermalCameras;
+    expect(camera).toMatchObject({ id: 'camera-door', x: 40, y: 8, range: 280 });
+    expect(camera?.facing).toBeCloseTo(Math.PI / 2);
+    expect(camera?.fieldOfView).toBeCloseTo((70 * Math.PI) / 180);
+  });
+});
+
 describe('isSolid', () => {
   it('treats everything outside the map as solid', () => {
     const level = parseLevel(tiledMap);

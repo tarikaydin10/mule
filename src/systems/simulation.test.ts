@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { LOOT } from './loot';
 import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS } from './noise';
+import { HEAT_TRACE_TEMPERATURE, PLAYER_TEMPERATURE } from './thermal';
+import { TICK_RATE } from './tick';
 import {
   applyCommand,
   CATCH_DISTANCE,
@@ -11,6 +13,7 @@ import {
   PICKUP_REACH,
   PLAYER_SIZE,
   PLAYER_SPEED,
+  heatSources,
   playerModifiers,
   securedLoot,
   step,
@@ -34,9 +37,11 @@ describe('createGameState', () => {
     const state = createGameState(level, ['p1']);
     expect(state).toEqual({
       tick: 0,
-      players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0 } },
+      players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0, thermalVision: false } },
       loot: {},
       guards: {},
+      cameras: {},
+      heatTraces: [],
       events: [],
       outcome: null,
     });
@@ -100,7 +105,9 @@ describe('carrying loot', () => {
   const run = (state: GameState, commands: Command[][]) => commands.reduce((s, tick) => step(s, tick, withBlock), state);
 
   it('places loot from the level, lying on the floor', () => {
-    expect(start().loot).toEqual({ block: { kind: 'serverBlock', x: 142, y: 80, carriedBy: null } });
+    expect(start().loot).toEqual({
+      block: { kind: 'serverBlock', x: 142, y: 80, carriedBy: null, temperature: LOOT.serverBlock.temperature, thawing: false },
+    });
   });
 
   it('finds loot within reach and ignores loot beyond it', () => {
@@ -130,7 +137,7 @@ describe('carrying loot', () => {
   it('puts loot down at the feet and removes its modifiers', () => {
     const moved = run(start(), [[pickUp, move(0, 1)], [], [move(0, 0)]]);
     const dropped = applyCommand(moved, drop, withBlock);
-    expect(dropped.loot.block).toEqual({ kind: 'serverBlock', x: moved.players.p1?.x, y: moved.players.p1?.y, carriedBy: null });
+    expect(dropped.loot.block).toMatchObject({ kind: 'serverBlock', x: moved.players.p1?.x, y: moved.players.p1?.y, carriedBy: null });
     expect(playerModifiers(dropped, 'p1')).toEqual({ speedMultiplier: 1, handsFree: true });
   });
 
@@ -261,5 +268,101 @@ describe('extraction and outcome', () => {
   it('spawns only one kind of loot when the debug switch asks for it', () => {
     const mixed = { ...level, loot: [{ id: 'a', kind: 'serverBlock' as const, x: 50, y: 50 }] };
     expect(Object.keys(createGameState(mixed, ['p1'], { onlyLoot: 'serverBlock' }).loot)).toEqual(['a']);
+  });
+});
+
+describe('thermal', () => {
+  const lootLevel = {
+    ...level,
+    loot: [
+      { id: 'probe', kind: 'cryoSample' as const, x: 112, y: 80 },
+      { id: 'block', kind: 'serverBlock' as const, x: 144, y: 80 },
+    ],
+  };
+  const pickUp: Command = { type: 'pickUp', playerId: 'p1' };
+  const drop: Command = { type: 'drop', playerId: 'p1' };
+  const toggle: Command = { type: 'toggleThermal', playerId: 'p1' };
+  const ticks = (state: GameState, count: number, lvl = lootLevel) => {
+    let current = state;
+    for (let i = 0; i < count; i++) current = step(current, [], lvl);
+    return current;
+  };
+
+  it('keeps the cryo sample cold until it is picked up', () => {
+    const state = ticks(createGameState(lootLevel, ['p1']), 5 * TICK_RATE);
+    expect(state.loot.probe?.temperature).toBe(LOOT.cryoSample.temperature);
+  });
+
+  it('thaws the cryo sample from the first pickup on, even after it is put down again', () => {
+    let state = step(createGameState(lootLevel, ['p1']), [pickUp], lootLevel);
+    expect(state.loot.probe?.carriedBy).toBe('p1');
+    state = step(state, [drop], lootLevel);
+    state = ticks(state, 10 * TICK_RATE);
+    expect(state.loot.probe?.temperature).toBeCloseTo(LOOT.cryoSample.temperature + LOOT.cryoSample.thawPerSecond * (10 + 2 / TICK_RATE), 3);
+  });
+
+  it('loses the cryo sample once fully thawed', () => {
+    let state = step(createGameState(lootLevel, ['p1']), [pickUp], lootLevel);
+    const seconds = Math.ceil((1 - LOOT.cryoSample.temperature) / LOOT.cryoSample.thawPerSecond) + 1;
+    let lost = false;
+    for (let i = 0; i < seconds * TICK_RATE; i++) {
+      state = step(state, [], lootLevel);
+      lost ||= state.events.some((e) => e.type === 'loot:lost' && e.lootId === 'probe');
+    }
+    expect(lost).toBe(true);
+    expect(state.loot.probe).toBeUndefined();
+    expect(carriedLoot(state, 'p1')).toBeNull();
+  });
+
+  it('keeps the server block at room temperature', () => {
+    const blockOnly = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 112, y: 80 }] };
+    const state = ticks(step(createGameState(blockOnly, ['p1']), [pickUp], blockOnly), 5 * TICK_RATE, blockOnly);
+    expect(state.loot.block?.temperature).toBe(LOOT.serverBlock.temperature);
+  });
+
+  it('switches thermal vision only with free hands, and two-handed loot switches it off', () => {
+    const blockOnly = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 112, y: 80 }] };
+    let state = applyCommand(createGameState(blockOnly, ['p1']), toggle, blockOnly);
+    expect(state.players.p1?.thermalVision).toBe(true);
+    state = applyCommand(state, pickUp, blockOnly);
+    expect(state.players.p1?.thermalVision).toBe(false);
+    expect(applyCommand(state, toggle, blockOnly)).toBe(state);
+  });
+
+  it('keeps thermal vision on while carrying the one-handed cryo sample', () => {
+    let state = applyCommand(createGameState(lootLevel, ['p1']), toggle, lootLevel);
+    state = applyCommand(state, pickUp, lootLevel);
+    expect(carriedLoot(state, 'p1')).toBe('probe');
+    expect(state.players.p1?.thermalVision).toBe(true);
+  });
+
+  it('leaves residual heat at every footstep', () => {
+    let state = step(createGameState(level, ['p1']), [move(1, 0)], level);
+    state = ticks(state, FOOTSTEP_INTERVAL_TICKS, level);
+    expect(state.heatTraces).toHaveLength(1);
+    expect(state.heatTraces[0]?.temperature).toBeLessThanOrEqual(HEAT_TRACE_TEMPERATURE);
+  });
+
+  it('lists players, guards, loot and traces as heat sources', () => {
+    const state = createGameState(lootLevel, ['p1']);
+    expect(heatSources(state)).toEqual([
+      { x: 112, y: 80, temperature: PLAYER_TEMPERATURE },
+      { x: 112, y: 80, temperature: LOOT.cryoSample.temperature },
+      { x: 144, y: 80, temperature: LOOT.serverBlock.temperature },
+    ]);
+  });
+
+  it('puts every guard on alarm when a thermal camera sees heat', () => {
+    // A camera looks at the spawn; a warm source there is what a thawed probe would be.
+    const camLevel = {
+      ...level,
+      thermalCameras: [{ id: 'cam', x: 48, y: 80, facing: 0, fieldOfView: Math.PI / 2, range: 300 }],
+      guards: [{ id: 'g', kind: 'dockGuard' as const, route: [{ x: 176, y: 48 }, { x: 176, y: 112 }], partner: null }],
+      loot: [{ id: 'probe', kind: 'cryoSample' as const, x: 112, y: 80 }],
+    };
+    let state = createGameState(camLevel, ['p1']);
+    state = { ...state, loot: { probe: { ...(state.loot.probe as NonNullable<typeof state.loot.probe>), temperature: 0.8 } } };
+    state = ticks(state, TICK_RATE, camLevel);
+    expect(state.guards.g?.mode).toBe('alarm');
   });
 });
