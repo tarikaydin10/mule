@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Superseded runs on feature branches are pointless; on main every commit gets deployed in order.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    name: Test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+      - name: Upload build
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Report missing deploy configuration
+        if: github.ref == 'refs/heads/main' && vars.DEPLOY_HOST == ''
+        run: echo "::notice title=Deploy skipped::Set the DEPLOY_* repository variables and the DEPLOY_SSH_KEY secret, see deploy/README.md."
+
+  deploy:
+    name: Deploy
+    needs: build
+    # Repository variables (not environment variables): only those are visible in a job-level `if`.
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_HOST != ''
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ vars.DEPLOY_HOST }}
+          USER_NAME: ${{ vars.DEPLOY_USER }}
+          PORT: ${{ vars.DEPLOY_PORT || '22' }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host deploy-target
+            HostName $HOST
+            User $USER_NAME
+            Port $PORT
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      - name: Upload release
+        run: |
+          release="$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          echo "RELEASE=$release" >> "$GITHUB_ENV"
+          rsync -rltz --chmod=D755,F644 dist/ "deploy-target:$DEPLOY_PATH/releases/$release/"
+
+      - name: Activate release
+        run: |
+          # Atomic switch: `current` always points at a complete release, never at a half-uploaded one.
+          ssh deploy-target sh -s -- "$DEPLOY_PATH" "$RELEASE" <<'EOF'
+          set -eu
+          cd "$1"
+          ln -sfn "releases/$2" current.tmp
+          mv -Tf current.tmp current
+          # Keep the five newest releases for rollbacks (names sort chronologically), never the active one.
+          active="$(readlink current)"
+          ls -1 releases | sort | head -n -5 | while read -r old; do
+            [ "releases/$old" = "$active" ] || rm -rf -- "releases/$old"
+          done
+          echo "Active release: $active"
+          EOF
