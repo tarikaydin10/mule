@@ -13,11 +13,11 @@ npm test        # Vitest, reine Spiellogik in src/systems
 npm run build   # Typecheck + Produktions-Build nach dist/
 ```
 
-Steuerung: WASD.
+Steuerung: WASD bewegt, T schaltet das Wärmebild zwischen White-Hot und Black-Hot um.
 
 ## Maps
 
-Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`.
+Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`. Jede Kachel braucht die float-Property `temperature` zwischen 0 und 1, sonst bricht das Spiel mit einer Meldung ab. Wärmequellen sind Rechteck-Objekte vom Typ `heat_source` mit derselben Property.
 
 ## Vor dem Deploy testen
 

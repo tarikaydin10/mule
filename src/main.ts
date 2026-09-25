@@ -2,7 +2,8 @@ import * as Phaser from 'phaser';
 import { GameScene } from './scenes/GameScene';
 
 new Phaser.Game({
-  type: Phaser.AUTO,
+  // WebGL is required: the thermal look is a shader filter.
+  type: Phaser.WEBGL,
   parent: 'game',
   backgroundColor: '#000000',
   pixelArt: true,
