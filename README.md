@@ -13,11 +13,11 @@ npm test        # Vitest, reine Spiellogik in src/systems
 npm run build   # Typecheck + Produktions-Build nach dist/
 ```
 
-Steuerung: WASD.
+Steuerung: WASD bewegt, E hebt Beute in Reichweite auf oder stellt sie ab.
 
 ## Maps
 
-Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile im Layer `walls`. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`. Beleuchtete Bereiche sind Rechtecke im Objekt-Layer `lights` mit der float-Property `brightness` zwischen 0 und 1. Alles außerhalb ist dunkel, und der Spieler sieht dort nur, was in Sichtlinie und nah bei ihm liegt.
+Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile im Layer `walls`. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`. Beute ist ein Punkt-Objekt vom Typ `loot` im Layer `objects`, mit der string-Property `kind`, zum Beispiel `serverBlock`. Beleuchtete Bereiche sind Rechtecke im Objekt-Layer `lights` mit der float-Property `brightness` zwischen 0 und 1. Alles außerhalb ist dunkel, und der Spieler sieht dort nur, was in Sichtlinie und nah bei ihm liegt.
 
 ## Vor dem Deploy testen
 

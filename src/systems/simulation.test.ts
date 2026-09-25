@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { LOOT } from './loot';
 import {
   applyCommand,
+  carriedLoot,
   createGameState,
+  lootInReach,
+  PICKUP_REACH,
   PLAYER_SIZE,
   PLAYER_SPEED,
+  playerModifiers,
   step,
   TICK_SECONDS,
   type Command,
+  type GameState,
 } from './simulation';
 import { levelFromRows } from './testLevel';
 
@@ -22,7 +28,7 @@ const move = (x: -1 | 0 | 1, y: -1 | 0 | 1): Command => ({ type: 'move', playerI
 describe('createGameState', () => {
   it('places every player at the spawn, standing still', () => {
     const state = createGameState(level, ['p1']);
-    expect(state).toEqual({ tick: 0, players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 } } } });
+    expect(state).toEqual({ tick: 0, players: { p1: { x: 112, y: 80, direction: { x: 0, y: 0 } } }, loot: {} });
   });
 });
 
@@ -71,5 +77,68 @@ describe('step', () => {
     const a = run();
     expect(run()).toEqual(a);
     expect(JSON.parse(JSON.stringify(a))).toEqual(a);
+  });
+});
+
+describe('carrying loot', () => {
+  // The server block lies 30 px right of the spawn, within reach.
+  const withBlock = { ...level, loot: [{ id: 'block', kind: 'serverBlock' as const, x: 142, y: 80 }] };
+  const pickUp: Command = { type: 'pickUp', playerId: 'p1' };
+  const drop: Command = { type: 'drop', playerId: 'p1' };
+  const start = () => createGameState(withBlock, ['p1']);
+  const run = (state: GameState, commands: Command[][]) => commands.reduce((s, tick) => step(s, tick, withBlock), state);
+
+  it('places loot from the level, lying on the floor', () => {
+    expect(start().loot).toEqual({ block: { kind: 'serverBlock', x: 142, y: 80, carriedBy: null } });
+  });
+
+  it('finds loot within reach and ignores loot beyond it', () => {
+    expect(lootInReach(start(), 'p1')).toBe('block');
+    const far = createGameState({ ...withBlock, loot: [{ id: 'block', kind: 'serverBlock', x: 112 + PICKUP_REACH + 1, y: 80 }] }, ['p1']);
+    expect(lootInReach(far, 'p1')).toBeNull();
+    expect(applyCommand(far, pickUp)).toBe(far);
+  });
+
+  it('picks up loot in reach and applies its modifiers', () => {
+    const carrying = applyCommand(start(), pickUp);
+    expect(carriedLoot(carrying, 'p1')).toBe('block');
+    expect(playerModifiers(carrying, 'p1')).toEqual({ speedMultiplier: 0.6, handsFree: false });
+    expect(playerModifiers(start(), 'p1')).toEqual({ speedMultiplier: 1, handsFree: true });
+  });
+
+  it('slows the carrier down by the loot speed multiplier', () => {
+    const state = run(start(), [[pickUp, move(0, 1)]]);
+    expect(state.players.p1?.y).toBeCloseTo(80 + PLAYER_SPEED * LOOT.serverBlock.speedMultiplier * TICK_SECONDS);
+  });
+
+  it('moves carried loot along with the carrier', () => {
+    const state = run(start(), [[pickUp, move(0, 1)], [], []]);
+    expect(state.loot.block).toMatchObject({ x: state.players.p1?.x, y: state.players.p1?.y, carriedBy: 'p1' });
+  });
+
+  it('puts loot down at the feet and removes its modifiers', () => {
+    const moved = run(start(), [[pickUp, move(0, 1)], [], [move(0, 0)]]);
+    const dropped = applyCommand(moved, drop);
+    expect(dropped.loot.block).toEqual({ kind: 'serverBlock', x: moved.players.p1?.x, y: moved.players.p1?.y, carriedBy: null });
+    expect(playerModifiers(dropped, 'p1')).toEqual({ speedMultiplier: 1, handsFree: true });
+  });
+
+  it('carries only one thing: picking up with full hands does nothing', () => {
+    const two = createGameState(
+      { ...withBlock, loot: [...withBlock.loot, { id: 'second', kind: 'serverBlock', x: 120, y: 80 }] },
+      ['p1'],
+    );
+    const carrying = applyCommand(two, pickUp);
+    expect(applyCommand(carrying, pickUp)).toBe(carrying);
+  });
+
+  it('ignores drop with empty hands', () => {
+    const state = start();
+    expect(applyCommand(state, drop)).toBe(state);
+  });
+
+  it('keeps the state JSON-serializable while carrying', () => {
+    const state = run(start(), [[pickUp, move(1, 1)], []]);
+    expect(JSON.parse(JSON.stringify(state))).toEqual(state);
   });
 });

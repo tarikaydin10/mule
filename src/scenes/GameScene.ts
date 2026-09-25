@@ -1,9 +1,12 @@
 import * as Phaser from 'phaser';
 import { clipPolygonToRect } from '../systems/geometry';
 import { parseLevel, type Level, type TiledMap } from '../systems/level';
+import { LOOT, type LootKind } from '../systems/loot';
 import { directionFromKeys, type Direction, type Vector2 } from '../systems/movement';
 import {
+  carriedLoot,
   createGameState,
+  lootInReach,
   PLAYER_SIZE,
   step,
   TICK_SECONDS,
@@ -25,6 +28,14 @@ const DARKNESS_OUT_OF_SIGHT = 0.92;
 const DARKNESS_IN_SIGHT = 0.72; // dark area the player has line of sight to
 const NEAR_ERASE = 0.45; // applied twice, at the full and at 60 % of NEAR_RADIUS, for a soft edge
 
+// Placeholder look per loot kind: size in px and fill colour.
+const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number }> = {
+  serverBlock: { width: 26, height: 18, color: 0x5b8fd6 },
+};
+
+// Draw order: world, loot, player, darkness, hint line.
+const DEPTH = { loot: 1, player: 2, darkness: 3, hud: 4 } as const;
+
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
 /**
@@ -36,6 +47,8 @@ export class GameScene extends Phaser.Scene {
   private state!: GameState;
   private keys!: WasdKeys;
   private playerView!: Phaser.GameObjects.Rectangle;
+  private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
+  private hint!: Phaser.GameObjects.Text;
   private darkness!: Phaser.GameObjects.RenderTexture;
   private eraser!: Phaser.GameObjects.Graphics;
   private litFrom: Vector2 | null = null;
@@ -74,9 +87,22 @@ export class GameScene extends Phaser.Scene {
     if (!player) {
       throw new Error('Local player is missing from the game state');
     }
-    this.playerView = this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2);
+    this.playerView = this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2).setDepth(DEPTH.player);
+    for (const [id, loot] of Object.entries(this.state.loot)) {
+      const look = LOOT_LOOK[loot.kind];
+      this.lootViews.set(id, this.add.rectangle(loot.x, loot.y, look.width, look.height, look.color).setDepth(DEPTH.loot));
+    }
+    this.hint = this.add
+      .text(16, 540 - 16, '', { fontFamily: 'Arial, sans-serif', fontSize: '18px', color: '#e9ece6' })
+      .setOrigin(0, 1)
+      .setScrollFactor(0)
+      .setDepth(DEPTH.hud)
+      .setShadow(0, 1, '#000000', 3);
 
-    this.darkness = this.add.renderTexture(0, 0, map.widthInPixels, map.heightInPixels).setOrigin(0, 0);
+    this.darkness = this.add
+      .renderTexture(0, 0, map.widthInPixels, map.heightInPixels)
+      .setOrigin(0, 0)
+      .setDepth(DEPTH.darkness);
     // Not on the display list: only used to cut shapes out of the darkness.
     this.eraser = this.make.graphics({}, false);
 
@@ -88,6 +114,11 @@ export class GameScene extends Phaser.Scene {
       throw new Error('Keyboard input is not available');
     }
     this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
+    // E picks up or puts down; the simulation decides whether it is possible.
+    keyboard.on('keydown-E', () => {
+      const type = carriedLoot(this.state, LOCAL_PLAYER) ? 'drop' : 'pickUp';
+      this.pending.push({ type, playerId: LOCAL_PLAYER });
+    });
   }
 
   override update(): void {
@@ -107,6 +138,27 @@ export class GameScene extends Phaser.Scene {
       this.playerView.setPosition(player.x, player.y);
       this.drawDarkness(player);
     }
+    for (const [id, loot] of Object.entries(this.state.loot)) {
+      // Carried loot sits on top of the carrier.
+      this.lootViews.get(id)?.setPosition(loot.x, loot.y).setDepth(loot.carriedBy ? DEPTH.player + 0.5 : DEPTH.loot);
+    }
+    this.hint.setText(this.hintText());
+  }
+
+  private hintText(): string {
+    const carried = carriedLoot(this.state, LOCAL_PLAYER);
+    const carriedKind = carried ? this.state.loot[carried]?.kind : undefined;
+    if (carriedKind) {
+      const loot = LOOT[carriedKind];
+      const effects = [
+        loot.speedMultiplier < 1 ? 'langsamer' : null,
+        loot.handsFree ? null : 'beide Hände belegt',
+      ].filter(Boolean);
+      return `Trägt: ${loot.name}${effects.length ? ` (${effects.join(', ')})` : ''}   ·   E: abstellen`;
+    }
+    const reachable = lootInReach(this.state, LOCAL_PLAYER);
+    const reachableKind = reachable ? this.state.loot[reachable]?.kind : undefined;
+    return reachableKind ? `E: ${LOOT[reachableKind].name} aufheben` : '';
   }
 
   /** Redraws the darkness layer when the player has moved: dark, except what the player can see. */

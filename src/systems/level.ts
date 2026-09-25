@@ -1,4 +1,5 @@
 import type { Rect } from './geometry';
+import { isLootKind, type LootKind } from './loot';
 
 /**
  * Static level data parsed straight from the Tiled JSON export, without Phaser,
@@ -16,6 +17,15 @@ export interface Level {
   spawn: { x: number; y: number };
   /** Lit areas; everywhere else is dark. */
   lights: LightZone[];
+  /** Where loot lies at the start. */
+  loot: LootSpawn[];
+}
+
+export interface LootSpawn {
+  id: string;
+  kind: LootKind;
+  x: number;
+  y: number;
 }
 
 export interface LightZone extends Rect {
@@ -34,11 +44,22 @@ interface TiledTileset {
   tiles?: { id: number; properties?: TiledProperty[] }[];
 }
 
+interface TiledObject {
+  id?: number;
+  name: string;
+  type?: string;
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+  properties?: TiledProperty[];
+}
+
 interface TiledLayer {
   name: string;
   type: string;
   data?: number[];
-  objects?: { name: string; x: number; y: number; width?: number; height?: number; properties?: TiledProperty[] }[];
+  objects?: TiledObject[];
 }
 
 export interface TiledMap {
@@ -63,9 +84,8 @@ export function parseLevel(map: TiledMap): Level {
     throw new Error('Tile layer "walls" is missing');
   }
   const colliding = collidingGids(map.tilesets);
-  const spawn = map.layers
-    .find((layer) => layer.name === 'objects' && layer.type === 'objectgroup')
-    ?.objects?.find((obj) => obj.name === 'player_spawn');
+  const objects = map.layers.find((layer) => layer.name === 'objects' && layer.type === 'objectgroup')?.objects ?? [];
+  const spawn = objects.find((obj) => obj.name === 'player_spawn');
   if (!spawn) {
     throw new Error('Object "player_spawn" is missing in layer "objects"');
   }
@@ -76,7 +96,21 @@ export function parseLevel(map: TiledMap): Level {
     solid: walls.data.map((gid) => colliding.has(gid & GID_MASK)),
     spawn: { x: spawn.x, y: spawn.y },
     lights: parseLights(map.layers.find((layer) => layer.name === 'lights' && layer.type === 'objectgroup')),
+    loot: parseLoot(objects),
   };
+}
+
+/** Objects of type "loot" in the layer "objects", with a string property "kind" naming a loot definition. */
+function parseLoot(objects: TiledObject[]): LootSpawn[] {
+  return objects
+    .filter((obj) => obj.type === 'loot')
+    .map((obj, index) => {
+      const kind = obj.properties?.find((p) => p.name === 'kind')?.value;
+      if (!isLootKind(kind)) {
+        throw new Error(`Loot "${obj.name}" has an unknown kind: ${String(kind)}`);
+      }
+      return { id: `loot-${obj.id ?? index}`, kind, x: obj.x, y: obj.y };
+    });
 }
 
 /** Rectangles in the optional object layer "lights", each with a float property "brightness". */

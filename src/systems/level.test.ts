@@ -66,6 +66,24 @@ describe('parseLevel lights', () => {
   });
 });
 
+describe('parseLevel loot', () => {
+  const withObjects = (objects: object[]): TiledMap => ({
+    ...tiledMap,
+    layers: tiledMap.layers.map((layer) =>
+      layer.name === 'objects' ? { ...layer, objects: [...(layer.objects ?? []), ...objects] } : layer,
+    ) as TiledMap['layers'],
+  });
+  const block = (kind: unknown) => ({ id: 7, name: 'rack', type: 'loot', x: 64, y: 16, properties: [{ name: 'kind', value: kind }] });
+
+  it('reads loot objects with their kind and a stable id', () => {
+    expect(parseLevel(withObjects([block('serverBlock')])).loot).toEqual([{ id: 'loot-7', kind: 'serverBlock', x: 64, y: 16 }]);
+  });
+
+  it('fails loudly on an unknown loot kind', () => {
+    expect(() => parseLevel(withObjects([block('toaster')]))).toThrow('unknown kind');
+  });
+});
+
 describe('isSolid', () => {
   it('treats everything outside the map as solid', () => {
     const level = parseLevel(tiledMap);
