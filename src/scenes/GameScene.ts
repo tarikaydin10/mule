@@ -1,5 +1,8 @@
 import * as Phaser from 'phaser';
+import type { GameEvent } from '../systems/events';
 import { clipPolygonToRect } from '../systems/geometry';
+import { DARK_SIGHT, GUARD_SIZE, type GuardMode, type GuardState } from '../systems/guards';
+import { GUARDS } from '../systems/guardTypes';
 import { parseLevel, type Level, type TiledMap } from '../systems/level';
 import { LOOT, type LootKind } from '../systems/loot';
 import { directionFromKeys, type Direction, type Vector2 } from '../systems/movement';
@@ -13,7 +16,7 @@ import {
   type Command,
   type GameState,
 } from '../systems/simulation';
-import { visibilityPolygon } from '../systems/visibility';
+import { visibilityPolygon, visionCone } from '../systems/visibility';
 
 const LOCAL_PLAYER = 'p1';
 // After a long stall (tab in background) the simulation catches up at most this far.
@@ -33,8 +36,17 @@ const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number
   serverBlock: { width: 26, height: 18, color: 0x5b8fd6 },
 };
 
-// Draw order: world, loot, player, darkness, hint line.
-const DEPTH = { loot: 1, player: 2, darkness: 3, hud: 4 } as const;
+// Draw order: world, view cones, loot, people, darkness, noise rings, text.
+const DEPTH = { cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5, hud: 4 } as const;
+
+// Guard look per mode: body colour and view cone colour.
+const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
+  patrol: { body: 0xd9a441, cone: 0xf2d27a },
+  investigate: { body: 0xe07b39, cone: 0xf0a060 },
+  search: { body: 0xe07b39, cone: 0xf0a060 },
+  alarm: { body: 0xd8433a, cone: 0xff5a4a },
+};
+const NOISE_RING_MS = 450;
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
@@ -49,6 +61,9 @@ export class GameScene extends Phaser.Scene {
   private playerView!: Phaser.GameObjects.Rectangle;
   private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
   private hint!: Phaser.GameObjects.Text;
+  private status!: Phaser.GameObjects.Text;
+  private guardViews = new Map<string, Phaser.GameObjects.Arc>();
+  private guardOverlay!: Phaser.GameObjects.Graphics;
   private darkness!: Phaser.GameObjects.RenderTexture;
   private eraser!: Phaser.GameObjects.Graphics;
   private litFrom: Vector2 | null = null;
@@ -92,6 +107,17 @@ export class GameScene extends Phaser.Scene {
       const look = LOOT_LOOK[loot.kind];
       this.lootViews.set(id, this.add.rectangle(loot.x, loot.y, look.width, look.height, look.color).setDepth(DEPTH.loot));
     }
+    for (const [id, guard] of Object.entries(this.state.guards)) {
+      this.guardViews.set(id, this.add.circle(guard.x, guard.y, GUARD_SIZE / 2, GUARD_LOOK.patrol.body).setDepth(DEPTH.player));
+    }
+    // View cones and suspicion bars, redrawn every frame, under the darkness like everything in the world.
+    this.guardOverlay = this.add.graphics().setDepth(DEPTH.cones);
+    this.status = this.add
+      .text(480, 16, '', { fontFamily: 'Arial, sans-serif', fontSize: '20px', color: '#ffffff', fontStyle: 'bold' })
+      .setOrigin(0.5, 0)
+      .setScrollFactor(0)
+      .setDepth(DEPTH.hud)
+      .setShadow(0, 1, '#000000', 4);
     this.hint = this.add
       .text(16, 540 - 16, '', { fontFamily: 'Arial, sans-serif', fontSize: '18px', color: '#e9ece6' })
       .setOrigin(0, 1)
@@ -131,6 +157,7 @@ export class GameScene extends Phaser.Scene {
       this.state = step(this.state, this.pending, this.level);
       this.pending = [];
       this.accumulator -= TICK_SECONDS;
+      this.showEvents(this.state.events);
     }
 
     const player = this.state.players[LOCAL_PLAYER];
@@ -142,7 +169,60 @@ export class GameScene extends Phaser.Scene {
       // Carried loot sits on top of the carrier.
       this.lootViews.get(id)?.setPosition(loot.x, loot.y).setDepth(loot.carriedBy ? DEPTH.player + 0.5 : DEPTH.loot);
     }
+    this.drawGuards();
     this.hint.setText(this.hintText());
+    this.status.setText(this.statusText()).setColor(this.anyGuard('alarm') ? '#ff6b5e' : '#f0c070');
+  }
+
+  private drawGuards(): void {
+    const overlay = this.guardOverlay.clear();
+    for (const [id, guard] of Object.entries(this.state.guards)) {
+      const look = GUARD_LOOK[guard.mode];
+      this.guardViews.get(id)?.setPosition(guard.x, guard.y).setFillStyle(look.body);
+      const range = GUARDS[guard.kind].sightRange;
+      const fov = GUARDS[guard.kind].fieldOfView;
+      // Outer cone: how far the guard sees into light. Inner cone: how far it sees into darkness.
+      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, fov, range), look.cone, 0.12);
+      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, fov, range * DARK_SIGHT), look.cone, 0.2);
+      if (guard.suspicion > 0) {
+        const width = 24;
+        overlay.fillStyle(0x000000, 0.6).fillRect(guard.x - width / 2, guard.y - 22, width, 4);
+        overlay.fillStyle(look.body, 1).fillRect(guard.x - width / 2, guard.y - 22, width * guard.suspicion, 4);
+      }
+    }
+  }
+
+  /** Noise shows as a ring that spreads to how far it carries, above the darkness. */
+  private showEvents(events: readonly GameEvent[]): void {
+    for (const event of events) {
+      if (event.type !== 'noise:emitted') {
+        continue;
+      }
+      const ring = this.add.circle(event.x, event.y, event.radius).setStrokeStyle(2, 0xffffff, 0.5).setDepth(DEPTH.noise);
+      ring.setScale(0.1);
+      this.tweens.add({
+        targets: ring,
+        scale: 1,
+        alpha: 0,
+        duration: NOISE_RING_MS,
+        ease: 'Cubic.easeOut',
+        onComplete: () => ring.destroy(),
+      });
+    }
+  }
+
+  private anyGuard(mode: GuardMode): boolean {
+    return Object.values(this.state.guards).some((guard: GuardState) => guard.mode === mode);
+  }
+
+  private statusText(): string {
+    if (this.anyGuard('alarm')) {
+      return 'ALARM – du wurdest entdeckt';
+    }
+    if (this.anyGuard('investigate') || this.anyGuard('search')) {
+      return 'Eine Wache ist misstrauisch';
+    }
+    return '';
   }
 
   private hintText(): string {
@@ -201,6 +281,18 @@ function erase(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], alpha:
     return;
   }
   graphics.fillStyle(0xffffff, alpha).beginPath().moveTo(first.x, first.y);
+  for (const point of rest) {
+    graphics.lineTo(point.x, point.y);
+  }
+  graphics.closePath().fillPath();
+}
+
+function fillPolygon(graphics: Phaser.GameObjects.Graphics, polygon: Vector2[], color: number, alpha: number): void {
+  const [first, ...rest] = polygon;
+  if (!first || rest.length < 2) {
+    return;
+  }
+  graphics.fillStyle(color, alpha).beginPath().moveTo(first.x, first.y);
   for (const point of rest) {
     graphics.lineTo(point.x, point.y);
   }

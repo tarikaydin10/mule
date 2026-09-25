@@ -1,5 +1,7 @@
 import type { Rect } from './geometry';
+import { isGuardKind, type GuardKind } from './guardTypes';
 import { isLootKind, type LootKind } from './loot';
+import type { Vector2 } from './movement';
 
 /**
  * Static level data parsed straight from the Tiled JSON export, without Phaser,
@@ -19,6 +21,26 @@ export interface Level {
   lights: LightZone[];
   /** Where loot lies at the start. */
   loot: LootSpawn[];
+  /** Areas that change how far noise carries. */
+  noiseZones: NoiseZone[];
+  guards: GuardSpawn[];
+}
+
+export interface NoiseZone extends Rect {
+  name: string;
+  /** Multiplies footstep noise: above 1 for loud floors like metal grating. */
+  surface: number;
+  /** 0 to 1, share of every noise drowned out by background sound like fans. */
+  masking: number;
+}
+
+export interface GuardSpawn {
+  id: string;
+  kind: GuardKind;
+  /** Patrol route, walked as a loop; the guard starts on the first point. */
+  route: Vector2[];
+  /** Id of the other guard of the pair, or null. */
+  partner: string | null;
 }
 
 export interface LootSpawn {
@@ -53,6 +75,7 @@ interface TiledObject {
   width?: number;
   height?: number;
   properties?: TiledProperty[];
+  polyline?: Vector2[];
 }
 
 interface TiledLayer {
@@ -97,7 +120,54 @@ export function parseLevel(map: TiledMap): Level {
     spawn: { x: spawn.x, y: spawn.y },
     lights: parseLights(map.layers.find((layer) => layer.name === 'lights' && layer.type === 'objectgroup')),
     loot: parseLoot(objects),
+    noiseZones: parseNoiseZones(map.layers.find((layer) => layer.name === 'noise' && layer.type === 'objectgroup')),
+    guards: parseGuards(objects),
   };
+}
+
+function property(obj: TiledObject, name: string): unknown {
+  return obj.properties?.find((p) => p.name === name)?.value;
+}
+
+/** Rectangles in the optional object layer "noise" with float properties "surface" and "masking". */
+function parseNoiseZones(layer: TiledLayer | undefined): NoiseZone[] {
+  return (layer?.objects ?? []).map((obj) => {
+    const surface = property(obj, 'surface') ?? 1;
+    const masking = property(obj, 'masking') ?? 0;
+    if (typeof surface !== 'number' || typeof masking !== 'number' || !obj.width || !obj.height) {
+      throw new Error(`Noise zone "${obj.name}" needs a size and number properties "surface" and "masking"`);
+    }
+    return { name: obj.name, x: obj.x, y: obj.y, width: obj.width, height: obj.height, surface, masking };
+  });
+}
+
+/**
+ * Polyline objects of type "guard" in the layer "objects": the line is the patrol route.
+ * String property "kind" names a guard definition, optional "partner" the name of the other guard.
+ */
+function parseGuards(objects: TiledObject[]): GuardSpawn[] {
+  const guards = objects.filter((obj) => obj.type === 'guard');
+  const idOf = (obj: TiledObject) => `guard-${obj.name}`;
+  return guards.map((obj) => {
+    const kind = property(obj, 'kind');
+    if (!isGuardKind(kind)) {
+      throw new Error(`Guard "${obj.name}" has an unknown kind: ${String(kind)}`);
+    }
+    if (!obj.polyline || obj.polyline.length < 2) {
+      throw new Error(`Guard "${obj.name}" needs a polyline as its patrol route`);
+    }
+    const partnerName = property(obj, 'partner');
+    const partner = typeof partnerName === 'string' ? guards.find((g) => g.name === partnerName) : undefined;
+    if (partnerName !== undefined && !partner) {
+      throw new Error(`Guard "${obj.name}" names an unknown partner: ${String(partnerName)}`);
+    }
+    return {
+      id: idOf(obj),
+      kind,
+      route: obj.polyline.map((point) => ({ x: obj.x + point.x, y: obj.y + point.y })),
+      partner: partner ? idOf(partner) : null,
+    };
+  });
 }
 
 /** Objects of type "loot" in the layer "objects", with a string property "kind" naming a loot definition. */
@@ -105,7 +175,7 @@ function parseLoot(objects: TiledObject[]): LootSpawn[] {
   return objects
     .filter((obj) => obj.type === 'loot')
     .map((obj, index) => {
-      const kind = obj.properties?.find((p) => p.name === 'kind')?.value;
+      const kind = property(obj, 'kind');
       if (!isLootKind(kind)) {
         throw new Error(`Loot "${obj.name}" has an unknown kind: ${String(kind)}`);
       }

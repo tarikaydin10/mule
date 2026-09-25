@@ -9,10 +9,12 @@ export interface LootDefinition {
   speedMultiplier: number;
   /** false when the loot needs both hands: no gadgets, no takedowns. */
   handsFree: boolean;
+  /** How far the sound of putting it down carries, in px. */
+  dropNoiseRadius: number;
 }
 
 export const LOOT = {
-  serverBlock: { name: 'Server-Block', speedMultiplier: 0.6, handsFree: false },
+  serverBlock: { name: 'Server-Block', speedMultiplier: 0.6, handsFree: false, dropNoiseRadius: 260 },
 } as const satisfies Record<string, LootDefinition>;
 
 export type LootKind = keyof typeof LOOT;

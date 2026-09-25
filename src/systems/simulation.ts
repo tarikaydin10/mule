@@ -1,7 +1,13 @@
 import { moveAndCollide } from './collision';
+import type { GameEvent } from './events';
+import { createGuards, updateGuards, type GuardState } from './guards';
 import type { Level } from './level';
 import { LOOT, type LootKind } from './loot';
 import { computeVelocity, STILL, type Direction, type Vector2 } from './movement';
+import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius } from './noise';
+import { TICK_SECONDS } from './tick';
+
+export { TICK_RATE, TICK_SECONDS } from './tick';
 
 /**
  * The whole game state: plain data, serializable as JSON, never stored in Phaser objects.
@@ -11,6 +17,9 @@ export interface GameState {
   tick: number;
   players: Record<string, PlayerState>;
   loot: Record<string, LootState>;
+  guards: Record<string, GuardState>;
+  /** What happened during the last tick. */
+  events: GameEvent[];
 }
 
 export interface PlayerState {
@@ -18,6 +27,8 @@ export interface PlayerState {
   y: number;
   /** Direction the player wants to move in, set by `move` commands. */
   direction: Direction;
+  /** Ticks walked since the last footstep sound. */
+  stepTicks: number;
 }
 
 export interface LootState {
@@ -42,10 +53,6 @@ export interface Modifiers {
   handsFree: boolean;
 }
 
-/** Fixed simulation rate, so every host computes the same result for the same commands. */
-export const TICK_RATE = 60;
-export const TICK_SECONDS = 1 / TICK_RATE;
-
 export const PLAYER_SPEED = 160; // px/s
 export const PLAYER_SIZE = 20; // px, below the 32 px tile size so one-tile gaps stay passable
 export const PICKUP_REACH = 36; // px, from the player's centre to the loot's
@@ -55,13 +62,13 @@ const NO_MODIFIERS: Modifiers = { speedMultiplier: 1, handsFree: true };
 export function createGameState(level: Level, playerIds: string[]): GameState {
   const players: Record<string, PlayerState> = {};
   for (const id of playerIds) {
-    players[id] = { x: level.spawn.x, y: level.spawn.y, direction: STILL };
+    players[id] = { x: level.spawn.x, y: level.spawn.y, direction: STILL, stepTicks: 0 };
   }
   const loot: Record<string, LootState> = {};
   for (const spawn of level.loot) {
     loot[spawn.id] = { kind: spawn.kind, x: spawn.x, y: spawn.y, carriedBy: null };
   }
-  return { tick: 0, players, loot };
+  return { tick: 0, players, loot, guards: createGuards(level), events: [] };
 }
 
 /** Id of the loot the player carries, or null. */
@@ -98,7 +105,8 @@ export function lootInReach(state: GameState, playerId: string): string | null {
   return nearest;
 }
 
-export function applyCommand(state: GameState, command: Command): GameState {
+/** Applies one command. Commands that make a sound add a noise event to `state.events`. */
+export function applyCommand(state: GameState, command: Command, level: Level): GameState {
   const player = state.players[command.playerId];
   if (!player) {
     return state;
@@ -115,14 +123,31 @@ export function applyCommand(state: GameState, command: Command): GameState {
     }
     case 'drop': {
       const carried = carriedLoot(state, command.playerId);
-      return carried ? withLoot(state, carried, { carriedBy: null, x: player.x, y: player.y }) : state;
+      const loot = carried ? state.loot[carried] : undefined;
+      if (!carried || !loot) {
+        return state;
+      }
+      const radius = noiseRadius(level, player, LOOT[loot.kind].dropNoiseRadius, 'impact');
+      return {
+        ...withLoot(state, carried, { carriedBy: null, x: player.x, y: player.y }),
+        events: [...state.events, { type: 'noise:emitted', x: player.x, y: player.y, radius }],
+      };
     }
   }
 }
 
-/** Applies the commands of this tick, then advances the world by one fixed tick. */
+/**
+ * Applies the commands of this tick, then advances the world by one fixed tick:
+ * players move and make footstep noise, then guards react to this tick's noise
+ * and to last tick's alerts from their partners.
+ */
 export function step(state: GameState, commands: readonly Command[], level: Level): GameState {
-  const commanded = commands.reduce(applyCommand, state);
+  const commanded = commands.reduce(
+    (current, command) => applyCommand(current, command, level),
+    { ...state, events: [] as GameEvent[] },
+  );
+  const events = [...commanded.events];
+
   const players: Record<string, PlayerState> = {};
   for (const [id, player] of Object.entries(commanded.players)) {
     const speed = PLAYER_SPEED * playerModifiers(commanded, id).speedMultiplier;
@@ -131,9 +156,25 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
       x: velocity.x * TICK_SECONDS,
       y: velocity.y * TICK_SECONDS,
     });
-    players[id] = { ...player, ...position };
+    const moved = position.x !== player.x || position.y !== player.y;
+    let stepTicks = moved ? player.stepTicks + 1 : player.stepTicks;
+    if (stepTicks >= FOOTSTEP_INTERVAL_TICKS) {
+      stepTicks = 0;
+      events.push({ type: 'noise:emitted', ...position, radius: noiseRadius(level, position, FOOTSTEP_RADIUS, 'footstep') });
+    }
+    players[id] = { ...player, ...position, stepTicks };
   }
-  return { tick: commanded.tick + 1, players, loot: followCarriers(commanded.loot, players) };
+
+  const partnerAlerts = state.events.filter((event) => event.type === 'guard:alerted');
+  const guards = updateGuards(commanded.guards, Object.values(players), level, [...events, ...partnerAlerts]);
+
+  return {
+    tick: commanded.tick + 1,
+    players,
+    loot: followCarriers(commanded.loot, players),
+    guards: guards.guards,
+    events: [...events, ...guards.events],
+  };
 }
 
 /** Carried loot moves with its carrier, so its position in the state is always current. */

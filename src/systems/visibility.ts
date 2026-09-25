@@ -31,6 +31,39 @@ export function visibilityPolygon(level: Level, origin: Vector2, radius: number,
   });
 }
 
+/**
+ * The part of the visible area inside a view cone: `facing` is the centre angle in radians,
+ * `fieldOfView` the full opening angle. Returns a closed polygon starting at the origin.
+ */
+export function visionCone(
+  level: Level,
+  origin: Vector2,
+  facing: number,
+  fieldOfView: number,
+  radius: number,
+): Vector2[] {
+  const half = fieldOfView / 2;
+  const relative = (point: Vector2) => normalizeAngle(Math.atan2(point.y - origin.y, point.x - origin.x) - facing);
+  const edge = (angle: number): Vector2 => {
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    const distance = castRay(level, origin, dx, dy, radius);
+    return { x: origin.x + dx * distance, y: origin.y + dy * distance };
+  };
+  const inside = visibilityPolygon(level, origin, radius)
+    .map((point) => ({ point, angle: relative(point) }))
+    .filter(({ angle }) => angle > -half && angle < half)
+    .sort((a, b) => a.angle - b.angle)
+    .map(({ point }) => point);
+  return [{ x: origin.x, y: origin.y }, edge(facing - half), ...inside, edge(facing + half)];
+}
+
+/** Maps an angle to [-PI, PI). */
+export function normalizeAngle(angle: number): number {
+  const turn = Math.PI * 2;
+  return ((((angle + Math.PI) % turn) + turn) % turn) - Math.PI;
+}
+
 /** Distance along a unit direction until the ray enters a solid tile, at most `maxDistance`. */
 export function castRay(level: Level, origin: Vector2, dx: number, dy: number, maxDistance: number): number {
   const size = level.tileSize;

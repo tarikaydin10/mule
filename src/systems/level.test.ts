@@ -84,6 +84,56 @@ describe('parseLevel loot', () => {
   });
 });
 
+describe('parseLevel guards and noise zones', () => {
+  const withLayers = (objects: object[], noise: object[] = []): TiledMap => ({
+    ...tiledMap,
+    layers: [
+      ...tiledMap.layers.map((layer) =>
+        layer.name === 'objects' ? { ...layer, objects: [...(layer.objects ?? []), ...objects] } : layer,
+      ),
+      { name: 'noise', type: 'objectgroup', objects: noise },
+    ] as TiledMap['layers'],
+  });
+  const guard = (name: string, props: object[]) => ({
+    id: 1,
+    name,
+    type: 'guard',
+    x: 16,
+    y: 16,
+    polyline: [{ x: 0, y: 0 }, { x: 64, y: 0 }],
+    properties: props,
+  });
+
+  it('reads guards with their absolute route and partner', () => {
+    const level = parseLevel(
+      withLayers([
+        guard('left', [{ name: 'kind', value: 'dockGuard' }, { name: 'partner', value: 'right' }]),
+        guard('right', [{ name: 'kind', value: 'dockGuard' }, { name: 'partner', value: 'left' }]),
+      ]),
+    );
+    expect(level.guards[0]).toEqual({
+      id: 'guard-left',
+      kind: 'dockGuard',
+      route: [{ x: 16, y: 16 }, { x: 80, y: 16 }],
+      partner: 'guard-right',
+    });
+  });
+
+  it('fails loudly on an unknown guard kind or partner', () => {
+    expect(() => parseLevel(withLayers([guard('x', [{ name: 'kind', value: 'ninja' }])]))).toThrow('unknown kind');
+    expect(() =>
+      parseLevel(withLayers([guard('x', [{ name: 'kind', value: 'dockGuard' }, { name: 'partner', value: 'nobody' }])])),
+    ).toThrow('unknown partner');
+  });
+
+  it('reads noise zones with defaults for missing properties', () => {
+    const level = parseLevel(
+      withLayers([], [{ name: 'fans', x: 0, y: 0, width: 64, height: 32, properties: [{ name: 'masking', value: 0.6 }] }]),
+    );
+    expect(level.noiseZones).toEqual([{ name: 'fans', x: 0, y: 0, width: 64, height: 32, surface: 1, masking: 0.6 }]);
+  });
+});
+
 describe('isSolid', () => {
   it('treats everything outside the map as solid', () => {
     const level = parseLevel(tiledMap);

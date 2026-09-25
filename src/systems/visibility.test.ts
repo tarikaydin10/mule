@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Vector2 } from './movement';
 import { levelFromRows } from './testLevel';
-import { castRay, visibilityPolygon } from './visibility';
+import { castRay, normalizeAngle, visibilityPolygon, visionCone } from './visibility';
 
 // Ray casting even-odd test, only used to check the polygons.
 function contains(polygon: Vector2[], point: Vector2): boolean {
@@ -70,5 +70,32 @@ describe('visibilityPolygon', () => {
     const face = { x: 164, y: 112 }; // 4 px into the pillar
     expect(contains(polygon, face)).toBe(false);
     expect(contains(visibilityPolygon(hall, eye, 1000, 8), face)).toBe(true);
+  });
+});
+
+describe('visionCone', () => {
+  // Looking right (angle 0) with a 90 degree cone.
+  const cone = visionCone(hall, eye, 0, Math.PI / 2, 1000);
+
+  it('covers what lies ahead within the opening angle', () => {
+    expect(contains(cone, { x: 120, y: 112 })).toBe(true);
+    expect(contains(cone, { x: 120, y: 90 })).toBe(true);
+  });
+
+  it('leaves out what lies behind or beside the viewer', () => {
+    expect(contains(cone, { x: 40, y: 112 })).toBe(false);
+    expect(contains(cone, { x: 50, y: 170 })).toBe(false);
+  });
+
+  it('is still blocked by walls', () => {
+    expect(contains(cone, { x: 250, y: 112 })).toBe(false);
+  });
+});
+
+describe('normalizeAngle', () => {
+  it('maps angles into [-PI, PI)', () => {
+    expect(normalizeAngle(0)).toBe(0);
+    expect(normalizeAngle(Math.PI * 1.5)).toBeCloseTo(-Math.PI / 2);
+    expect(normalizeAngle(-Math.PI * 1.5)).toBeCloseTo(Math.PI / 2);
   });
 });
