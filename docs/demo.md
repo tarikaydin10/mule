@@ -16,20 +16,28 @@ Pier 9 ist aus einer Raumtabelle gebaut. Wer spawnt, sieht ein dunkles Eck und e
 | Zeit | Der Spieler sieht | Er versteht | Er tut |
 |---|---|---|---|
 | 0 s | Briefing: Titel, drei Sätze Auftrag, Lageplan mit Du, Van und beiden Zielen samt Wert, Tastenleiste | Zwei Ziele, ich wähle vor Ort. Rein hier, raus da. | Enter |
-| 0–15 s | Kaimauer, Van mit Namen direkt hinter sich, Laterne, Schild „Zoll-Lager →“, in der Ferne ein Lichtkegel, der über den Hof wandert | Da geht es lang. Das ist eine Wache. | läuft los |
-| 15–40 s | Der Weg führt an einer Kiste vorbei („Kiste · Versteck“), eine Wache kommt frontal entgegen, die Hinweiszeile sagt „E: verstecken“ | Verstecken ist ein Werkzeug. | versteckt sich, die Wache läuft vorbei. Wer es nicht tut: Balken füllt sich, Wache kommt nachsehen, noch kein Alarm |
-| 40–60 s | Kreuzung im Lager. Beide Zielmarker mit Entfernung; links Kühlhaus-Schild und Kompressorbrummen, rechts Bürolicht. Ein Schalter neben der Hoflampe („Schalter · Hoflicht“) | Die Wahl. Der Schalter macht etwas mit dem Licht. | wählt eine Richtung |
-| 60–120 s | Das Ziel: Block hinter dem Paar im Büro, Probe im Kühlhaus hinter der Wärmekamera | Der Preis steht in der Hinweiszeile: langsam, beide Hände / taut auf | hebt auf |
-| 120–200 s | Rückweg: mit Block kein Wärmebild, kein Takedown, kein Wurf, halbes Tempo; mit Probe Temperatur in Prozent und eine Wärmekamera am Steg | Die Beute verändert die Regeln. | wählt den Rückweg |
-| bis 240 s | Van, F. Endbildschirm: Wert, Zeit, „nochmal mit der anderen Beute?“ | Wiederholen lohnt. | R oder 1/2 |
+| 0–15 s | Kai im Laternenlicht, das Boot mit Namen direkt hinter sich, Schild „Hof →“, ein Posten am Fuß des Stegs mit dem Rücken zum Spieler, in der Gasse ein Lichtkegel, der näher kommt | Da geht es lang. Das sind Wachen, und die eine sieht mich nicht. | läuft los, in die Gasse oder zum Posten |
+| 15–40 s | Gasse: die Wache kommt frontal entgegen, neben dem Weg ein offener Container („Offener Container · Versteck“), die Hinweiszeile sagt „E: verstecken“. Oder Steg: „Q: Takedown“ am Posten | Verstecken und Takedown sind Werkzeuge. | versteckt sich, die Wache steht drei Sekunden daneben und dreht um. Wer es nicht tut: Balken füllt sich, Wache kommt nachsehen, noch kein Alarm |
+| 40–60 s | Hof: das Paar läuft durch das Hoflicht, der Schalter daneben („Hoflicht · Schalter“), am Tor das Schild „Büro · Lager · Kühlhaus“; beide Zielmarker mit Entfernung | Die Wahl. Der Schalter macht den Hof dunkel, und das Paar kommt nachsehen. | wählt eine Richtung |
+| 60–120 s | Das Ziel: Block im Serverraum hinter dem Paar im Büro (Fensterband zum Gang, Bürolicht-Schalter am Gang, Container zum Verstecken daneben); Probe im Kühlhaus hinter dem Kompressor | Der Preis steht in der Hinweiszeile: beide Hände, Tempo 60 % / taut auf | hebt auf |
+| 120–200 s | Rückweg: der Steg ist kurz, aber die Wärmekamera oben sieht die warme Probe, und der Posten steht unten, falls er noch steht; der Hof ist lang, mit dem Paar und einer Wärmekamera an der Gasse. Mit Block kein Wärmebild, kein Takedown, kein Wurf | Die Beute verändert die Regeln: für den Block muss der Posten vorher weg, für die Probe zählt die Zeit. | wählt den Rückweg |
+| bis 240 s | Boot, F. Endbildschirm: Wert, Zeit, „nochmal mit der anderen Beute?“ | Wiederholen lohnt. | R oder 1/2 |
 
 ## Aufbau
 
 - **D1 Affordance-Schicht**, map-unabhängig: Briefing mit Lageplan · Karte auf Tab · Zielmarker mit Pfeilen am Bildschirmrand · Namen an allen Objekten · Statuszeile antwortet auf Ereignisse · Endbildschirm mit Empfehlung.
-- **D2 Demo-Map**: kompakt, etwa 60 × 40 Kacheln, aus dem Drehbuch gebaut; der Einstieg lehrt jedes Werkzeug einmal. Pier 9 bleibt unter `?map=pier9` als Materiallager.
+- **D2 Demo-Map** (`public/maps/demo.json`, Generator `scripts/make-demo.mjs`): 60 × 40 Kacheln, aus dem Drehbuch gebaut; der Einstieg lehrt jedes Werkzeug einmal. Pier 9 bleibt unter `?map=pier9` als Materiallager.
 - **D3 Feinschliff**: Werte, Zeiten, Test mit einem Fremden. Danach das Gate aus der Roadmap.
 
 ## Was das für die Daten heißt
 
 - Die Map trägt ihr Briefing (`briefing`, Map-Property). Beuten tragen ihren Ort (`place`, z. B. „Büro Süd“). Verstecke und Schalter tragen einen Namen für den Spieler (`label`).
 - Der Lageplan ist die Kollisionsschicht, klein gezeichnet. Kein zweites Datenformat.
+
+## Die Demo-Map
+
+Westen ist Wasser. Am Kai (Südwesten) liegen Boot, Spawn und Laterne. Von dort führen zwei Wege: der Steg am Wasser nach Norden direkt zum Gang der drei Räume, mit einem Posten am Fuß (Rücken zum Kai) und einer Wärmekamera oben; und die Gasse nach Osten in den Hof, mit einer Wache, die bis zum offenen Container vorläuft und dort drei Sekunden steht, und einer Wärmekamera am Hofende der Gasse.
+
+Der Hof (Süden, Mitte) hat zwei Containerreihen, einen offenen Container, ein Paar auf einer großen Runde mit Plauderpunkt, das Hoflicht unter dem Tor und den Schalter daneben. Durch das Tor geht es in den Gang (Notlicht) mit den drei Räumen: Büro (Westen, hell, Paar, Fensterband, Schalter am Gang, offener Container in der Wand) mit dem Serverraum und dem Block dahinter; Lager (Mitte, dunkel, Regale, eine Wache, Zollkasse); Kühlhaus (Osten, dunkel, Kompressor maskiert Schritte, Probe dahinter).
+
+Preise: Der Steg ist der kurze Rückweg. Mit der Probe sieht ihn die Kamera nach etwa 25 s Tragen; mit dem Block ist er nur offen, wenn der Posten vorher weg ist, denn mit dem Block gibt es keinen Takedown und keinen Wurf. Der Hof ist der lange Rückweg mit dem Paar; das Hoflicht aus macht ihn dunkel, ruft aber das Paar an den Schalter.

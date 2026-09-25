@@ -106,3 +106,35 @@ describe('pier9', () => {
     expect(pier9.hideSpots).toHaveLength(3);
   });
 });
+
+describe('demo', () => {
+  const demo = maps.find((m) => m.name === 'demo.json')?.level;
+  if (!demo) {
+    throw new Error('demo.json is missing');
+  }
+  const boat = { x: demo.extraction!.x + 48, y: demo.extraction!.y + 48 };
+  const loot = (id: string) => {
+    const spawn = demo.loot.find((l) => l.id === id);
+    if (!spawn) {
+      throw new Error(`${id} is missing`);
+    }
+    return spawn;
+  };
+
+  it('keeps the run short: both targets are within a minute of walking', () => {
+    // 5 tiles/s with the sample, 3 tiles/s with the block, on the shortest path (docs/demo.md).
+    expect(distance(demo, loot('loot-probe'), boat) / 5).toBeLessThan(20);
+    expect(distance(demo, loot('loot-block'), boat) / 3).toBeLessThan(25);
+    expect(distance(demo, demo.spawn, loot('loot-probe')) / 5).toBeLessThan(20);
+  });
+
+  it('has what the script needs: a briefing, places, labels, two switches, three hide spots, two cameras', () => {
+    expect(demo.briefing).toContain('Boot');
+    expect(demo.loot.every((l) => l.place !== '')).toBe(true);
+    expect(demo.extraction?.label).toBe('Boot');
+    expect(demo.switches.map((s) => s.target).sort()).toEqual(['buero', 'hoflicht']);
+    expect(demo.hideSpots).toHaveLength(3);
+    expect(demo.thermalCameras).toHaveLength(2);
+    expect(demo.guards.filter((g) => g.post).map((g) => g.id)).toEqual(['guard-steg']);
+  });
+});

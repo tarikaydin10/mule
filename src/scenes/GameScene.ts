@@ -32,7 +32,7 @@ import { visibilityPolygon, visionCone } from '../systems/visibility';
 import { drawPlan, planLayout, toPlan, type PlanLayout } from './plan';
 
 const LOCAL_PLAYER = 'p1';
-const DEFAULT_MAP = 'pier9';
+const DEFAULT_MAP = 'demo';
 const WIDTH = 960;
 const HEIGHT = 540;
 // After a long stall (tab in background) the simulation catches up at most this far.
@@ -61,6 +61,9 @@ const LOOT_LOOK: Record<LootKind, { width: number; height: number; color: number
 
 // Draw order: world, heat traces, view cones, loot, people, darkness, noise rings and objective.
 const DEPTH = { traces: 0.3, cones: 0.5, loot: 1, player: 2, darkness: 3, noise: 3.5 } as const;
+// View cones are drawn strong enough to read as torch beams through the darkness the player
+// can see into, and to all but vanish behind the darkness they cannot.
+const BEAM_ALPHA = { far: 0.35, near: 0.55 } as const;
 
 // Guard look per mode: body colour and view cone colour.
 const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
@@ -85,7 +88,7 @@ const FONT = 'Arial, sans-serif';
 const LABEL_NEAR = 130; // px, objects this close are named even in the dark
 const MARKER_MARGIN = 30; // px, arrows to off-screen objectives sit inside this edge
 const EXTRACTION_COLOR = 0x5fd08a;
-const MAP_TITLES: Record<string, string> = { pier9: 'Pier 9', testmap: 'Testmap' };
+const MAP_TITLES: Record<string, string> = { demo: 'Pier 9', pier9: 'Pier 9 · groß', testmap: 'Testmap' };
 const OVERLAY_DEPTH = 10;
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
@@ -337,7 +340,8 @@ export class GameScene extends Phaser.Scene {
           .setAlpha(0.85),
       ).setDepth(DEPTH.loot);
     }
-    // View cones and suspicion bars, redrawn every frame, under the darkness like everything in the world.
+    // View cones and suspicion bars, redrawn every frame, under the darkness like everything in
+    // the world: the darkness the player sees into lets them through like torch beams.
     this.overlay = this.world(this.add.graphics()).setDepth(DEPTH.cones);
     this.traces = this.world(this.add.graphics()).setDepth(DEPTH.traces);
     this.darkness = this.world(this.add.renderTexture(0, 0, map.widthInPixels, map.heightInPixels))
@@ -417,12 +421,12 @@ export class GameScene extends Phaser.Scene {
       }
       // Outer cone: how far the guard sees into light. Inner cone: how far it sees into darkness.
       const range = definition.sightRange;
-      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, definition.fieldOfView, range), look.cone, 0.12);
+      fillPolygon(overlay, visionCone(this.level, guard, guard.facing, definition.fieldOfView, range), look.cone, BEAM_ALPHA.far);
       fillPolygon(
         overlay,
         visionCone(this.level, guard, guard.facing, definition.fieldOfView, range * DARK_SIGHT),
         look.cone,
-        0.2,
+        BEAM_ALPHA.near,
       );
       if (guard.suspicion > 0) {
         const width = 24;
@@ -433,7 +437,7 @@ export class GameScene extends Phaser.Scene {
     if (!thermal) {
       for (const camera of this.level.thermalCameras) {
         const cone = visionCone(this.level, camera, camera.facing, camera.fieldOfView, camera.range, 'heat');
-        fillPolygon(overlay, cone, THERMAL_CAMERA_COLOR, 0.1);
+        fillPolygon(overlay, cone, THERMAL_CAMERA_COLOR, BEAM_ALPHA.far);
       }
     }
   }
@@ -601,13 +605,18 @@ export class GameScene extends Phaser.Scene {
         const definition = LOOT[loot.kind];
         const place = this.level.loot.find((spawn) => spawn.id === id)?.place;
         items.push(this.add.rectangle(56, y + 10, 12, 12, LOOT_LOOK[loot.kind].color));
-        items.push(
-          this.add.text(72, y, `${definition.name}${place ? `  ·  ${place}` : ''}`, { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#e9ece6' }),
-        );
+        const name = this.add.text(72, y, `${definition.name}${place ? `  ·  ${place}` : ''}`, {
+          fontFamily: FONT,
+          fontSize: '17px',
+          fontStyle: 'bold',
+          color: '#e9ece6',
+          wordWrap: { width: 340 },
+        });
+        items.push(name);
         items.push(this.add.text(478, y, formatValue(definition.value), { fontFamily: FONT, fontSize: '17px', color: '#f0a23b' }).setOrigin(1, 0));
-        const rule = this.add.text(72, y + 22, lootRule(loot.kind), { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac', wordWrap: { width: 400 } });
+        const rule = this.add.text(72, y + name.height + 4, lootRule(loot.kind), { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac', wordWrap: { width: 400 } });
         items.push(rule);
-        y += 26 + rule.height + 6;
+        y += name.height + 8 + rule.height + 6;
       }
       y += 4;
     }
@@ -671,13 +680,16 @@ export class GameScene extends Phaser.Scene {
     const items: Phaser.GameObjects.GameObject[] = [plan, marks];
     const label = (at: Vector2, text: string, color: string, dy: number) =>
       items.push(this.add.text(at.x, at.y + dy, text, { fontFamily: FONT, fontSize: '12px', color }).setOrigin(0.5, 1).setShadow(0, 1, '#000000', 3));
-    for (const loot of Object.values(this.state.loot)) {
+    // Targets are named on the plan; side loot is only a dot, so the names stay readable.
+    for (const [id, loot] of Object.entries(this.state.loot)) {
       if (loot.carriedBy) {
         continue;
       }
       const at = toPlan(layout, loot);
       marks.fillStyle(LOOT_LOOK[loot.kind].color, 1).fillCircle(at.x, at.y, 4);
-      label(at, LOOT[loot.kind].name, cssColor(LOOT_LOOK[loot.kind].color), -7);
+      if (this.isTarget(id)) {
+        label(at, LOOT[loot.kind].name, cssColor(LOOT_LOOK[loot.kind].color), -7);
+      }
     }
     const zone = this.level.extraction;
     if (zone) {

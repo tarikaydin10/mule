@@ -3,32 +3,11 @@
 // After that the Tiled file (public/maps/pier9.json) is the source; edit it in Tiled.
 //
 // Coordinates below are tiles; the map is 100 x 60 with two rows of water at the top.
-import { writeFileSync } from 'node:fs';
-import { tilesetEntry } from './make-tileset.mjs';
+import { createMap } from './tiled.mjs';
 
 const W = 100;
 const H = 60;
-const T = 32;
-
-// Cell characters and their tileset gid in the walls layer.
-const GID = { '#': 2, G: 3, C: 4, W: 6, P: 7, S: 8 };
-const GROUND_GRATING = 5;
-
-const grid = Array.from({ length: H }, () => Array(W).fill('#'));
-const ground = Array.from({ length: H }, () => Array(W).fill('.'));
-
-const set = (x, y, c) => {
-  if (x < 0 || y < 0 || x >= W || y >= H) throw new Error(`out of map: ${x},${y}`);
-  grid[y][x] = c;
-};
-const fill = (x0, y0, x1, y1, c) => {
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) set(x, y, c);
-};
-const carve = (x0, y0, x1, y1) => fill(x0, y0, x1, y1, '.');
-const door = (...cells) => cells.forEach(([x, y]) => set(x, y, '.'));
-const grating = (x0, y0, x1, y1) => {
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) ground[y][x] = 'g';
-};
+const { set, fill, carve, door, grating, c, prop, point, rect, polyline, guard, post, camera, loot, sign, hideSpot, lightSwitch, write } = createMap(W, H);
 
 // ---------- geometry ----------
 fill(0, 0, W - 1, 1, 'W'); // harbour basin
@@ -121,39 +100,6 @@ door([8, 40], [9, 40]); // Pumpenhaus <-> Zufahrt
 door([22, 36], [22, 37]); // Pumpenhaus <-> yard
 
 // ---------- objects ----------
-let nextId = 1;
-const c = (x, y) => ({ x: x * T + T / 2, y: y * T + T / 2 });
-const prop = (name, value) => ({ name, type: typeof value === 'number' ? 'float' : 'string', value });
-const point = (name, type, [x, y], properties = []) => ({
-  id: nextId++, name, type, point: true, x, y, width: 0, height: 0, rotation: 0, visible: true, properties,
-});
-const rect = (name, type, x0, y0, x1, y1, properties = []) => ({
-  id: nextId++, name, type, x: x0 * T, y: y0 * T, width: (x1 - x0 + 1) * T, height: (y1 - y0 + 1) * T, rotation: 0, visible: true, properties,
-});
-const polyline = (name, type, points, properties = []) => {
-  const [first] = points.map(([x, y]) => c(x, y));
-  return {
-    id: nextId++, name, type, x: first.x, y: first.y, width: 0, height: 0, rotation: 0, visible: true, properties,
-    polyline: points.map(([x, y]) => ({ x: c(x, y).x - first.x, y: c(x, y).y - first.y })),
-  };
-};
-const guard = (name, points, props = {}) =>
-  polyline(name, 'guard', points, [prop('kind', 'dockGuard'), ...Object.entries(props).map(([k, v]) => prop(k, v))]);
-const post = (name, [x, y], facing, sweep) =>
-  point(name, 'guard', [c(x, y).x, c(x, y).y], [prop('kind', 'dockGuard'), prop('facing', facing), prop('sweep', sweep)]);
-const camera = (name, [x, y], angle, range) =>
-  point(name, 'thermalCamera', [c(x, y).x, c(x, y).y], [prop('angle', angle), prop('fov', 70), prop('range', range)]);
-const loot = (name, kind, [x, y], place, group, variant) =>
-  point(name, 'loot', [c(x, y).x, c(x, y).y], [
-    prop('kind', kind),
-    prop('place', place),
-    ...(group ? [prop('group', group), prop('variant', variant)] : []),
-  ]);
-const hideSpot = (name, label, [x, y]) => point(name, 'hideSpot', [c(x, y).x, c(x, y).y], [prop('label', label)]);
-const lightSwitch = (name, label, [x, y], target, alerts) =>
-  point(name, 'switch', [c(x, y).x, c(x, y).y], [prop('label', label), prop('target', target), prop('alerts', alerts)]);
-const sign = (text, [x, y]) => point(text, 'sign', [c(x, y).x, c(x, y).y]);
-
 const spawn = c(4, 54);
 const objects = [
   point('player_spawn', '', [spawn.x, spawn.y]),
@@ -219,48 +165,10 @@ const noise = [
   rect('pumps', 'noise', 1, 19, 21, 39, [prop('masking', 0.3)]),
 ];
 
-// ---------- checks ----------
-const at = (x, y) => grid[y][x];
-for (const obj of objects) {
-  if (obj.type === 'loot' || obj.type === 'hideSpot' || obj.type === 'switch' || obj.type === 'thermalCamera' || obj.name === 'player_spawn') {
-    const tx = Math.floor(obj.x / T);
-    const ty = Math.floor(obj.y / T);
-    if (at(tx, ty) !== '.') throw new Error(`${obj.name} sits in a wall at ${tx},${ty}`);
-  }
-}
-
-// ---------- output ----------
-const layer = (id, name, data) => ({ data, height: H, id, name, opacity: 1, type: 'tilelayer', visible: true, width: W, x: 0, y: 0 });
-const objectLayer = (id, name, objs) => ({ draworder: 'topdown', id, name, objects: objs, opacity: 1, type: 'objectgroup', visible: true, x: 0, y: 0 });
 const briefing = [
   'Pier 9, Nachtschicht. Im Zoll-Lager warten zwei Lieferungen, die morgen früh weg sind.',
   'Hol eine davon. Oder beide, wenn du dich traust.',
   'Rein über die Kaimauer, raus mit dem Boot.',
 ].join('\n');
 
-const map = {
-  compressionlevel: -1,
-  properties: [prop('briefing', briefing)],
-  height: H,
-  infinite: false,
-  layers: [
-    layer(1, 'ground', ground.flat().map((g) => (g === 'g' ? GROUND_GRATING : 1))),
-    layer(2, 'walls', grid.flat().map((ch) => GID[ch] ?? 0)),
-    objectLayer(3, 'objects', objects),
-    objectLayer(4, 'lights', lights),
-    objectLayer(5, 'noise', noise),
-  ],
-  nextlayerid: 6,
-  nextobjectid: nextId,
-  orientation: 'orthogonal',
-  renderorder: 'right-down',
-  tiledversion: '1.11.2',
-  tileheight: T,
-  tilesets: [tilesetEntry()],
-  tilewidth: T,
-  type: 'map',
-  version: '1.10',
-  width: W,
-};
-writeFileSync(new URL('../public/maps/pier9.json', import.meta.url), JSON.stringify(map) + '\n');
-console.log(grid.map((r, y) => String(y).padStart(2) + ' ' + r.join('')).join('\n'));
+write('../public/maps/pier9.json', { objects, lights, noise, briefing });
