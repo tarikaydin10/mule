@@ -1,0 +1,18 @@
+# Serves the build exactly like the edge Caddy on the VPS: same image, same site file,
+# same path. Only the address differs, so no DNS or certificate is needed.
+#
+#   npm run build
+#   docker compose -f deploy/local/compose.yml up
+#   -> http://localhost:8080
+name: mule-local
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "8080:8080"
+    environment:
+      MULE_ADDRESS: ":8080"
+    volumes:
+      - ../../dist:/srv/static/mule/current:ro
+      - ../mule.caddy:/etc/caddy/Caddyfile:ro

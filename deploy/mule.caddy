@@ -3,8 +3,11 @@
 # MULE is a static bundle, so no process or container runs for it. The edge Caddy
 # serves the files straight from /srv/static (mounted read-only into its container),
 # and a deploy only switches the `current` symlink. Caddy follows it per request.
+#
+# MULE_ADDRESS is only set for the local test (deploy/local/compose.yml); on the VPS
+# it is unset and the domain below applies.
 
-mule.klick-profi.de {
+{$MULE_ADDRESS:mule.klick-profi.de} {
 	encode zstd gzip
 
 	root * /srv/static/mule/current
