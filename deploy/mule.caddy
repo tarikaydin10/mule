@@ -1,0 +1,32 @@
+# Site for the edge Caddy: copy to /srv/edge/conf.d/mule.caddy (see deploy/README.md).
+#
+# MULE is a static bundle, so no process or container runs for it. The edge Caddy
+# serves the files straight from /srv/static (mounted read-only into its container),
+# and a deploy only switches the `current` symlink. Caddy follows it per request.
+
+mule.klick-profi.de {
+	encode zstd gzip
+
+	root * /srv/static/mule/current
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# Vite puts a content hash into every file name under /assets/, so they may be cached forever.
+	@immutable path /assets/*
+	header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+	# Everything else (index.html, maps, tilesets) is revalidated, so a deploy shows up immediately.
+	@revalidate not path /assets/*
+	header @revalidate Cache-Control "no-cache"
+
+	file_server
+
+	log {
+		output discard
+	}
+}

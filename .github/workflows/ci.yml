@@ -38,23 +38,25 @@ jobs:
           retention-days: 7
 
       - name: Report missing deploy configuration
-        if: github.ref == 'refs/heads/main' && vars.DEPLOY_HOST == ''
-        run: echo "::notice title=Deploy skipped::Set the DEPLOY_* repository variables and the DEPLOY_SSH_KEY secret, see deploy/README.md."
+        if: github.ref == 'refs/heads/main' && vars.DOMAIN == ''
+        run: echo "::notice title=Deploy skipped::Set the repository variable DOMAIN and the SSH secrets, see deploy/README.md."
 
   deploy:
     name: Deploy
     needs: build
-    # Repository variables (not environment variables): only those are visible in a job-level `if`.
-    if: github.ref == 'refs/heads/main' && vars.DEPLOY_HOST != ''
+    # DOMAIN has to be a repository variable: a job-level condition cannot read secrets.
+    if: github.ref == 'refs/heads/main' && vars.DOMAIN != ''
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: production
-      url: ${{ vars.DEPLOY_URL }}
+      url: https://${{ vars.DOMAIN }}
     concurrency:
       group: deploy-production
       cancel-in-progress: false
     env:
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+      # Static sites live under /srv/static, which the edge Caddy mounts read-only.
+      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/srv/static/mule' }}
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -63,21 +65,36 @@ jobs:
 
       - name: Configure SSH
         env:
-          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
-          KNOWN_HOSTS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
-          HOST: ${{ vars.DEPLOY_HOST }}
-          USER_NAME: ${{ vars.DEPLOY_USER }}
-          PORT: ${{ vars.DEPLOY_PORT || '22' }}
+          SSH_PRIVATE_KEY_B64: ${{ secrets.SSH_PRIVATE_KEY_B64 }}
+          # Accepted from either tab: whether GitHub calls a value a secret or a
+          # variable should not silently break a deploy.
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS || vars.SSH_KNOWN_HOSTS }}
+          SSH_HOST: ${{ secrets.SSH_HOST || vars.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER || vars.SSH_USER || 'deploy' }}
+          SSH_PORT: ${{ vars.SSH_PORT || secrets.SSH_PORT || '22' }}
         run: |
+          for name in SSH_PRIVATE_KEY_B64 SSH_KNOWN_HOSTS SSH_HOST; do
+            if [ -z "${!name}" ]; then
+              echo "::error::$name is not set, see deploy/README.md."
+              exit 1
+            fi
+          done
           install -d -m 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          # Base64 on purpose: a PEM key pasted into a secret field easily loses a newline,
+          # and then fails much later as an obscure libcrypto error inside rsync.
+          printf '%s' "$SSH_PRIVATE_KEY_B64" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          if ! ssh-keygen -y -f ~/.ssh/deploy_key > /dev/null 2>&1; then
+            echo "::error::SSH_PRIVATE_KEY_B64 is not a valid private key. Set it to the output of: base64 -w0 <keyfile>"
+            exit 1
+          fi
+          # Pinned host key, never trust on first use.
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host deploy-target
-            HostName $HOST
-            User $USER_NAME
-            Port $PORT
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
             IdentityFile ~/.ssh/deploy_key
             IdentitiesOnly yes
             StrictHostKeyChecking yes
@@ -104,3 +121,23 @@ jobs:
           done
           echo "Active release: $active"
           EOF
+
+      - name: Verify live site
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: |
+          # A green run must mean "this build is live", not just "rsync worked":
+          # the served index.html has to be the one just built, and every bundle it names must load.
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS "https://$DOMAIN/" -o live.html && cmp -s live.html dist/index.html; then
+              grep -oE 'assets/[^"]+' dist/index.html | while read -r asset; do
+                curl -fsS -o /dev/null "https://$DOMAIN/$asset"
+              done
+              echo "Live: https://$DOMAIN/ serves release $RELEASE"
+              exit 0
+            fi
+            echo "attempt $attempt: https://$DOMAIN/ does not serve this build yet"
+            sleep 3
+          done
+          echo "::error::https://$DOMAIN/ does not serve this build."
+          exit 1

@@ -21,4 +21,4 @@ Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](h
 
 ## Deployment
 
-Jeder Push auf `main` wird getestet, gebaut und auf den VPS deployt. Einrichtung: [deploy/README.md](deploy/README.md).
+Jeder Push auf `main` wird getestet, gebaut und auf die Hetzner-CX23 hinter den Edge-Caddy deployt. Einrichtung: [deploy/README.md](deploy/README.md).

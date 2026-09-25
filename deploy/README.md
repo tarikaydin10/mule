@@ -1,94 +1,111 @@
 # Deployment
 
-Jeder Push auf `main` läuft durch GitHub Actions (`.github/workflows/ci.yml`):
+MULE ist ein statisches Bundle und läuft wie Kartei auf der Hetzner-CX23 hinter dem Edge-Caddy (`/srv/edge`, siehe Ryadom `deploy/edge/`). Für das Spiel läuft **kein Prozess und kein Container**. Der Edge-Caddy liefert die Dateien direkt aus `/srv/static` aus, ein Deploy ist ein Symlink-Wechsel.
+
+```
+/srv/static/mule/releases/<zeit>-<commit>/   ← eine Release
+/srv/static/mule/current -> releases/…       ← was ausgeliefert wird
+/srv/edge/conf.d/mule.caddy                  ← die Site
+```
+
+Jeder Push auf `main` läuft durch `.github/workflows/ci.yml`:
 
 1. `npm ci`, `npm test`, `npm run build`
-2. `dist/` per `rsync` über SSH nach `/var/www/mule/releases/<zeit>-<commit>/` auf den Hetzner-VPS
-3. Symlink `/var/www/mule/current` wird atomar auf das neue Release umgestellt, die fünf neuesten Releases bleiben für Rollbacks liegen
-4. Caddy liefert `current` aus und kümmert sich selbst um das HTTPS-Zertifikat
+2. `dist/` per `rsync` in eine neue Release hochladen
+3. `current` atomar umhängen, die fünf neuesten Releases bleiben für Rollbacks liegen
+4. Prüfen, dass `https://<DOMAIN>/` genau dieses Build ausliefert und alle Bundles laden
 
-Andere Branches werden nur getestet und gebaut. Solange die Variablen unten fehlen, wird der Deploy-Job übersprungen und der Build meldet das als Hinweis.
+Andere Branches werden nur getestet und gebaut. Solange die Variable `DOMAIN` fehlt, wird der Deploy übersprungen und der Build meldet das als Hinweis.
 
-## Einmalige Einrichtung
+---
 
-### 1. DNS
+## Einmalig auf dem Server
 
-Eine Subdomain, z. B. `mule.deinedomain.de`, als A-Record (und AAAA für IPv6) auf die IP des VPS zeigen lassen. Liegt die Domain bei All-Inkl: KAS → Tools → DNS-Einstellungen.
+Als root auf der CX23:
 
-### 2. Server (Ubuntu/Debian, als root oder mit `sudo`)
+```bash
+# 1. Verzeichnis für den Deploy-Benutzer
+mkdir -p /srv/static/mule/releases
+chown -R deploy:deploy /srv/static/mule
 
-Caddy aus dem offiziellen Repository installieren, damit es aktuell bleibt: <https://caddyserver.com/docs/install#debian-ubuntu-raspbian>
+# 2. Der Edge-Caddy muss /srv/static sehen. Seit Kartei ist das eingerichtet; prüfen:
+grep -n '/srv/static' /srv/edge/docker-compose.yml
+#    Keine Ausgabe? Dann unter caddy.volumes ergänzen:
+#      - /srv/static:/srv/static:ro
+#    und danach: cd /srv/edge && docker compose up -d
 
-```sh
-apt install -y rsync
-
-# Deploy-Benutzer ohne Passwort-Login ('*' sperrt das Passwort, SSH-Keys funktionieren weiter)
-useradd --create-home --shell /bin/bash --password '*' deploy
-install -d -o deploy -g deploy -m 755 /var/www/mule /var/www/mule/releases
-install -d -o deploy -g deploy -m 700 /home/deploy/.ssh
+# 3. Site-Datei ablegen und Caddy neu laden
+curl -fsSL https://raw.githubusercontent.com/tarikaydin10/mule/main/deploy/mule.caddy \
+  -o /srv/edge/conf.d/mule.caddy
+docker exec edge-caddy caddy reload --config /etc/caddy/Caddyfile
 ```
 
-Den Site-Block aus `deploy/Caddyfile` an `/etc/caddy/Caddyfile` anhängen, die Domain ersetzen, dann:
+Ein Syntaxfehler lässt den Reload fehlschlagen und die laufende Konfiguration unangetastet. Ryadom, Kartei und alles andere hinter dem Edge-Caddy bleiben davon unberührt.
 
-```sh
-caddy validate --config /etc/caddy/Caddyfile && systemctl reload caddy
+## DNS bei ALL-INKL
+
+Im **KAS** unter `Domain` → `klick-profi.de` → `DNS-Einstellungen`:
+
+| Name   | Typ    | Wert                     |
+| ------ | ------ | ------------------------ |
+| `mule` | `A`    | IPv4 der CX23            |
+| `mule` | `AAAA` | IPv6 der CX23 (optional) |
+
+**Nicht** unter „Subdomain anlegen" eine Subdomain auf dem ALL-INKL-Webspace erzeugen. Das legt einen konkurrierenden A-Record auf den KAS-Server an.
+
+```bash
+nslookup mule.klick-profi.de
 ```
 
-Ports 80 und 443 müssen offen sein (auch in einer Hetzner-Cloud-Firewall, falls aktiv). SSH muss aus dem Internet erreichbar sein, weil GitHub-Runner wechselnde IPs haben.
+Sobald der Name auf die CX23 zeigt, holt der Edge-Caddy das Zertifikat selbst.
 
-Läuft auf dem VPS schon ein anderer Webserver (nginx, Traefik …), zeigt man ihn stattdessen auf `/var/www/mule/current` und übernimmt die beiden Cache-Regeln aus `deploy/Caddyfile`.
+## Deploy-Schlüssel
 
-### 3. SSH-Key nur für GitHub Actions
+Ein eigener Schlüssel nur für dieses Repo, damit er sich einzeln sperren lässt. Am einfachsten auf dem Server erzeugen:
 
-Lokal:
+```bash
+ssh-keygen -t ed25519 -f /tmp/k -C github-actions-mule -N ''
+# restrict: keine Port-Weiterleitung, kein Terminal; rsync und ssh-Kommandos gehen weiter
+echo "restrict $(cat /tmp/k.pub)" >> /home/deploy/.ssh/authorized_keys
+chown deploy:deploy /home/deploy/.ssh/authorized_keys && chmod 600 /home/deploy/.ssh/authorized_keys
 
-```sh
-ssh-keygen -t ed25519 -N "" -C "github-actions-mule" -f mule_deploy
+echo "── SSH_PRIVATE_KEY_B64 (eine Zeile) ──"
+base64 -w0 /tmp/k; echo
+echo "── SSH_KNOWN_HOSTS ──"
+echo "DEINE_SERVER_IP $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+
+shred -u /tmp/k /tmp/k.pub
 ```
 
-Den Inhalt von `mule_deploy.pub` auf dem Server mit vorangestelltem `restrict` eintragen (keine Port-Weiterleitung, kein Terminal):
+`DEINE_SERVER_IP` durch genau den Wert ersetzen, der auch in `SSH_HOST` steht. Bei einem anderen SSH-Port als 22 lautet der Anfang `[IP]:PORT`. `SSH_HOST` und `SSH_KNOWN_HOSTS` sind dieselben Werte wie bei Ryadom, weil es derselbe Server ist.
 
-```sh
-echo "restrict ssh-ed25519 AAAA...  github-actions-mule" >> /home/deploy/.ssh/authorized_keys
-chown deploy:deploy /home/deploy/.ssh/authorized_keys
-chmod 600 /home/deploy/.ssh/authorized_keys
-```
+## GitHub
 
-Host-Key des Servers für `DEPLOY_KNOWN_HOSTS` holen und den Fingerprint vergleichen:
+**Settings → Secrets and variables → Actions**
 
-```sh
-# lokal
-ssh-keyscan -t ed25519 <host> | tee known_hosts.txt | ssh-keygen -lf -
-# auf dem Server, muss denselben Fingerprint zeigen
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
-```
-
-Bei einem anderen SSH-Port als 22: `ssh-keyscan -p <port> ...`.
-
-### 4. GitHub
-
-Repository → Settings → Secrets and variables → Actions. Die Variablen als **Repository variables** anlegen, nicht als Environment variables, sonst sieht der Workflow sie nicht.
-
-| Name | Art | Wert |
+| Typ | Name | Wert |
 |---|---|---|
-| `DEPLOY_SSH_KEY` | Secret | Inhalt der privaten Datei `mule_deploy` |
-| `DEPLOY_HOST` | Variable | IP oder Hostname des VPS |
-| `DEPLOY_USER` | Variable | `deploy` |
-| `DEPLOY_PATH` | Variable | `/var/www/mule` |
-| `DEPLOY_KNOWN_HOSTS` | Variable | Inhalt von `known_hosts.txt` |
-| `DEPLOY_URL` | Variable | `https://mule.deinedomain.de` |
-| `DEPLOY_PORT` | Variable, optional | SSH-Port, Standard `22` |
+| Secret | `SSH_PRIVATE_KEY_B64` | Ausgabe von `base64 -w0 /tmp/k` |
+| Secret | `SSH_KNOWN_HOSTS` | die Zeile von oben |
+| Secret | `SSH_HOST` | IP der CX23 |
+| Variable | `DOMAIN` | `mule.klick-profi.de` |
+| Secret | `SSH_USER` | nur falls nicht `deploy` |
+| Variable | `SSH_PORT` | nur falls nicht 22 |
+| Variable | `DEPLOY_PATH` | nur falls nicht `/srv/static/mule` |
 
-Danach `mule_deploy` lokal löschen. Der nächste Push auf `main` deployt. Manuell geht es über Actions → CI → Run workflow auf `main`.
+`DOMAIN` muss im **Variables**-Reiter stehen: Die CI entscheidet daran, ob überhaupt deployt wird, und diese Entscheidung kann keine Secrets lesen. Die SSH-Werte werden aus beiden Reitern gelesen.
+
+Danach deployt jeder Push auf `main`. Von Hand geht es über Actions → CI → Run workflow auf `main`.
 
 ## Rollback
 
-Auf dem Server als `deploy`:
-
-```sh
-cd /var/www/mule
-ls releases
-ln -sfn releases/<release> current.tmp && mv -Tf current.tmp current
+```bash
+ssh deploy@<CX23> 'ls -1 /srv/static/mule/releases'
+ssh deploy@<CX23> 'cd /srv/static/mule && ln -sfn releases/<RELEASE> current.tmp && mv -Tf current.tmp current'
 ```
 
-Der nächste Push auf `main` stellt wieder auf das neueste Release um.
+Kein Reload nötig, Caddy folgt dem Symlink pro Anfrage. Der nächste Push auf `main` stellt wieder auf das neueste Build um.
+
+## Andere Domain
+
+Domain in `deploy/mule.caddy` und in der Variable `DOMAIN` ändern, Site-Datei neu ablegen, Caddy neu laden.
