@@ -31,7 +31,7 @@ Geplante Map-Typen: Fracht-Dock (dunkel, Wachen in 2er-Teams), Rechenzentrum (L�
 
 - **Noise:** Geräuschereignisse mit Radius, Oberflächen- und Umgebungsmodifikator (Maskierung durch Lüfter).
 - **Light:** Beleuchtungszonen, schaltbar. Beeinflusst Sichtweite der Wachen.
-- **Thermal:** Jede Entität hat `temperature` (0–1). Rendering + Wärmesensoren lesen denselben Wert. Umsetzung: Alles wird in dem Grauwert seiner Temperatur gezeichnet (`temperatureTint`), der Kamera-Filter macht daraus das Wärmebild. Tileset-Grafiken sind deshalb nahezu weiß und tragen nur Struktur.
+- **Thermal:** Jede Entität hat `temperature` (0–1). Rendering + Wärmesensoren lesen denselben Wert.
 - **Sensors:** Kameras, Laser, Wärmekameras.
 - **Guard AI:** Patrouille, Verdacht, Suche, Alarm. Paar-Verhalten (Takedown eines Partners alarmiert den anderen).
 
@@ -57,8 +57,7 @@ Geplante Map-Typen: Fracht-Dock (dunkel, Wachen in 2er-Teams), Rechenzentrum (L�
 **Ordnerstruktur:**
 - `src/systems/` – reine Spiellogik ohne Phaser, mit Vitest-Tests daneben (`*.test.ts`). Ein Test bricht ab, sobald hier Phaser importiert wird.
 - `src/scenes/` – Phaser-Szenen: verbinden Systeme mit Rendering, Physik und Input.
-- `src/render/` – Rendering-Bausteine für Phaser, z. B. der Wärmebild-Filter mit seinem Shader.
-- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides`, Spawnpunkte als Objekte im Layer `objects`. Jede Kachel braucht die Property `temperature` (0–1), Wärmequellen sind Objekte vom Typ `heat_source` mit `temperature`.
+- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides`, Spawnpunkte als Objekte im Layer `objects`.
 - `public/tilesets/` – Tileset-Bilder.
 - `deploy/` – Server-Konfiguration und Deploy-Anleitung.
 
