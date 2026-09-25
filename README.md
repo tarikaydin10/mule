@@ -8,7 +8,7 @@ Node siehe `.nvmrc`.
 
 ```sh
 npm install
-npm run dev     # Dev-Server, ?debug in der URL zeigt die Physik-Hitboxen
+npm run dev     # Dev-Server
 npm test        # Vitest, reine Spiellogik in src/systems
 npm run build   # Typecheck + Produktions-Build nach dist/
 ```
@@ -17,13 +17,13 @@ Steuerung: WASD.
 
 ## Maps
 
-Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`.
+Maps liegen als Tiled-JSON in `public/maps/` und lassen sich direkt in [Tiled](https://www.mapeditor.org/) öffnen. Phaser liest nur eingebettete Tilesets, also neue Tilesets beim Anlegen einbetten. Wände kollidieren über die bool-Property `collides` am Tile im Layer `walls`. Der Spieler startet am Punkt-Objekt `player_spawn` im Layer `objects`.
 
 ## Vor dem Deploy testen
 
 Drei Stufen, jede näher am Server:
 
-1. **Spielen während der Entwicklung:** `npm run dev`, dann <http://localhost:5173>. Änderungen erscheinen sofort, `?debug` zeigt die Hitboxen.
+1. **Spielen während der Entwicklung:** `npm run dev`, dann <http://localhost:5173>. Änderungen erscheinen sofort.
 2. **Das fertige Build:** `npm run build`, dann `npm run preview` und <http://localhost:4173>. Genau die Dateien, die auf den Server gehen.
 3. **Wie auf dem Server:** Mit Docker liefert derselbe Caddy mit derselben Site-Datei das Build aus, inklusive Header und Cache-Regeln.
 

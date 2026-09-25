@@ -1,15 +1,33 @@
 import * as Phaser from 'phaser';
-import { computeVelocity } from '../systems/movement';
+import { parseLevel, type Level, type TiledMap } from '../systems/level';
+import { directionFromKeys, type Direction } from '../systems/movement';
+import {
+  createGameState,
+  PLAYER_SIZE,
+  step,
+  TICK_SECONDS,
+  type Command,
+  type GameState,
+} from '../systems/simulation';
 
-const PLAYER_SPEED = 160; // px/s
-const PLAYER_SIZE = 20; // px, below the 32 px tile size so one-tile gaps stay passable
+const LOCAL_PLAYER = 'p1';
+// After a long stall (tab in background) the simulation catches up at most this far.
+const MAX_TICKS_PER_FRAME = 5;
 
 type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
 
-/** Wires the pure systems to Phaser: map loading, rendering, physics and input. */
+/**
+ * Translates input into commands, runs the simulation in fixed ticks and draws the result.
+ * No game state lives here: the rectangle only mirrors `state`.
+ */
 export class GameScene extends Phaser.Scene {
-  private playerBody!: Phaser.Physics.Arcade.Body;
+  private level!: Level;
+  private state!: GameState;
   private keys!: WasdKeys;
+  private playerView!: Phaser.GameObjects.Rectangle;
+  private pending: Command[] = [];
+  private lastDirection: Direction = { x: 0, y: 0 };
+  private accumulator = 0;
 
   constructor() {
     super('game');
@@ -21,6 +39,14 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
+    // The simulation reads the raw Tiled JSON; Phaser only uses the same file for drawing.
+    const tiled = this.cache.tilemap.get('testmap') as { data: TiledMap } | undefined;
+    if (!tiled) {
+      throw new Error('Map "testmap" is not loaded');
+    }
+    this.level = parseLevel(tiled.data);
+    this.state = createGameState(this.level, [LOCAL_PLAYER]);
+
     const map = this.make.tilemap({ key: 'testmap' });
     // First argument is the tileset name inside the Tiled file.
     const tileset = map.addTilesetImage('placeholder', 'tiles-placeholder');
@@ -28,27 +54,16 @@ export class GameScene extends Phaser.Scene {
       throw new Error('Tileset "placeholder" not found in testmap');
     }
     map.createLayer('ground', tileset);
-    const walls = map.createLayer('walls', tileset);
-    if (!walls) {
-      throw new Error('Layer "walls" not found in testmap');
-    }
-    // Collision is authored in Tiled as a bool tile property.
-    walls.setCollisionByProperty({ collides: true });
+    map.createLayer('walls', tileset);
 
-    const spawn = map.findObject('objects', (obj) => obj.name === 'player_spawn');
-    if (spawn?.x === undefined || spawn.y === undefined) {
-      throw new Error('Object "player_spawn" not found in testmap');
+    const player = this.state.players[LOCAL_PLAYER];
+    if (!player) {
+      throw new Error('Local player is missing from the game state');
     }
-
-    const player = this.add.rectangle(spawn.x, spawn.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2);
-    this.physics.add.existing(player);
-    this.playerBody = player.body as Phaser.Physics.Arcade.Body;
-    this.playerBody.setCollideWorldBounds(true);
-    this.physics.world.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-    this.physics.add.collider(player, walls);
+    this.playerView = this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2);
 
     this.cameras.main.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-    this.cameras.main.startFollow(player, true);
+    this.cameras.main.startFollow(this.playerView, true);
 
     const keyboard = this.input.keyboard;
     if (!keyboard) {
@@ -57,16 +72,33 @@ export class GameScene extends Phaser.Scene {
     this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
   }
 
-  override update(): void {
-    const velocity = computeVelocity(
-      {
-        up: this.keys.W.isDown,
-        down: this.keys.S.isDown,
-        left: this.keys.A.isDown,
-        right: this.keys.D.isDown,
-      },
-      PLAYER_SPEED,
-    );
-    this.playerBody.setVelocity(velocity.x, velocity.y);
+  override update(_time: number, delta: number): void {
+    this.collectInput();
+
+    this.accumulator = Math.min(this.accumulator + delta / 1000, MAX_TICKS_PER_FRAME * TICK_SECONDS);
+    while (this.accumulator >= TICK_SECONDS) {
+      this.state = step(this.state, this.pending, this.level);
+      this.pending = [];
+      this.accumulator -= TICK_SECONDS;
+    }
+
+    const player = this.state.players[LOCAL_PLAYER];
+    if (player) {
+      this.playerView.setPosition(player.x, player.y);
+    }
+  }
+
+  /** Sends a move command only when the direction changes, as a network client would. */
+  private collectInput(): void {
+    const direction = directionFromKeys({
+      up: this.keys.W.isDown,
+      down: this.keys.S.isDown,
+      left: this.keys.A.isDown,
+      right: this.keys.D.isDown,
+    });
+    if (direction.x !== this.lastDirection.x || direction.y !== this.lastDirection.y) {
+      this.pending.push({ type: 'move', playerId: LOCAL_PLAYER, direction });
+      this.lastDirection = direction;
+    }
   }
 }

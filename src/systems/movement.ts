@@ -1,9 +1,7 @@
-/** Directional input as plain booleans, independent of any input library. */
-export interface MoveInput {
-  up: boolean;
-  down: boolean;
-  left: boolean;
-  right: boolean;
+/** A direction on each axis: -1, 0 or 1. Up is -1 on y. */
+export interface Direction {
+  x: -1 | 0 | 1;
+  y: -1 | 0 | 1;
 }
 
 export interface Vector2 {
@@ -11,16 +9,36 @@ export interface Vector2 {
   y: number;
 }
 
-/**
- * Turns directional input into a top-down velocity in px/s.
- * Opposing directions cancel out; diagonals are normalized so they are not faster.
- */
-export function computeVelocity(input: MoveInput, speed: number): Vector2 {
-  const dx = Number(input.right) - Number(input.left);
-  const dy = Number(input.down) - Number(input.up);
-  if (dx === 0 && dy === 0) {
+export const STILL: Direction = { x: 0, y: 0 };
+
+/** Pressed directional keys, independent of any input library. */
+export interface DirectionalKeys {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+}
+
+/** Opposing keys cancel each other out. */
+export function directionFromKeys(keys: DirectionalKeys): Direction {
+  return {
+    x: axis(keys.left, keys.right),
+    y: axis(keys.up, keys.down),
+  };
+}
+
+function axis(negative: boolean, positive: boolean): -1 | 0 | 1 {
+  if (negative === positive) {
+    return 0;
+  }
+  return negative ? -1 : 1;
+}
+
+/** Top-down velocity in px/s. Diagonals are normalized so they are not faster. */
+export function computeVelocity(direction: Direction, speed: number): Vector2 {
+  if (direction.x === 0 && direction.y === 0) {
     return { x: 0, y: 0 };
   }
-  const scale = speed / Math.hypot(dx, dy);
-  return { x: dx * scale, y: dy * scale };
+  const scale = speed / Math.hypot(direction.x, direction.y);
+  return { x: direction.x * scale, y: direction.y * scale };
 }

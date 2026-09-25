@@ -12,10 +12,5 @@ new Phaser.Game({
     width: 960,
     height: 540,
   },
-  physics: {
-    default: 'arcade',
-    // Append ?debug to the URL to see physics bodies.
-    arcade: { debug: new URLSearchParams(window.location.search).has('debug') },
-  },
   scene: [GameScene],
 });
