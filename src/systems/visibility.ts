@@ -1,0 +1,93 @@
+import { isSolid, type Level } from './level';
+import type { Vector2 } from './movement';
+
+// Rays around the full circle, so open areas get a round edge.
+const CIRCLE_RAYS = 96;
+// Extra rays just beside every wall corner, so shadow edges run exactly along the walls.
+const CORNER_OFFSET = 1e-4;
+
+/**
+ * The area visible from `origin` up to `radius`, as polygon points sorted by angle.
+ * Walls block sight. `wallReveal` lets each ray reach that many px into the wall it hits,
+ * so the faces of walls in view are part of the area.
+ */
+export function visibilityPolygon(level: Level, origin: Vector2, radius: number, wallReveal = 0): Vector2[] {
+  const angles: number[] = [];
+  for (let i = 0; i < CIRCLE_RAYS; i++) {
+    angles.push((i / CIRCLE_RAYS) * Math.PI * 2 - Math.PI);
+  }
+  for (const corner of wallCornersNear(level, origin, radius)) {
+    const angle = Math.atan2(corner.y - origin.y, corner.x - origin.x);
+    angles.push(angle - CORNER_OFFSET, angle, angle + CORNER_OFFSET);
+  }
+  angles.sort((a, b) => a - b);
+
+  return angles.map((angle) => {
+    const dx = Math.cos(angle);
+    const dy = Math.sin(angle);
+    const hit = castRay(level, origin, dx, dy, radius);
+    const distance = hit < radius ? Math.min(hit + wallReveal, radius) : radius;
+    return { x: origin.x + dx * distance, y: origin.y + dy * distance };
+  });
+}
+
+/** Distance along a unit direction until the ray enters a solid tile, at most `maxDistance`. */
+export function castRay(level: Level, origin: Vector2, dx: number, dy: number, maxDistance: number): number {
+  const size = level.tileSize;
+  let column = Math.floor(origin.x / size);
+  let row = Math.floor(origin.y / size);
+  if (isSolid(level, column, row)) {
+    return 0;
+  }
+  const stepX = dx > 0 ? 1 : -1;
+  const stepY = dy > 0 ? 1 : -1;
+  const deltaX = dx !== 0 ? size / Math.abs(dx) : Infinity;
+  const deltaY = dy !== 0 ? size / Math.abs(dy) : Infinity;
+  let nextX = dx !== 0 ? ((dx > 0 ? (column + 1) * size - origin.x : origin.x - column * size) / Math.abs(dx)) : Infinity;
+  let nextY = dy !== 0 ? ((dy > 0 ? (row + 1) * size - origin.y : origin.y - row * size) / Math.abs(dy)) : Infinity;
+
+  for (;;) {
+    let distance: number;
+    if (nextX < nextY) {
+      distance = nextX;
+      column += stepX;
+      nextX += deltaX;
+    } else {
+      distance = nextY;
+      row += stepY;
+      nextY += deltaY;
+    }
+    if (distance >= maxDistance) {
+      return maxDistance;
+    }
+    if (isSolid(level, column, row)) {
+      return distance;
+    }
+  }
+}
+
+/**
+ * Grid points where a shadow edge can start: the outer and inner corners of walls.
+ * Points inside a wall block or along a straight wall need no ray of their own.
+ */
+function wallCornersNear(level: Level, origin: Vector2, radius: number): Vector2[] {
+  const size = level.tileSize;
+  const first = (value: number) => Math.floor((value - radius) / size);
+  const last = (value: number) => Math.ceil((value + radius) / size);
+  const corners: Vector2[] = [];
+  for (let row = first(origin.y); row <= last(origin.y); row++) {
+    for (let column = first(origin.x); column <= last(origin.x); column++) {
+      // The four tiles around grid point (column, row).
+      const topLeft = isSolid(level, column - 1, row - 1);
+      const topRight = isSolid(level, column, row - 1);
+      const bottomLeft = isSolid(level, column - 1, row);
+      const bottomRight = isSolid(level, column, row);
+      const solid = Number(topLeft) + Number(topRight) + Number(bottomLeft) + Number(bottomRight);
+      const diagonal = solid === 2 && topLeft === bottomRight;
+      if (solid === 1 || solid === 3 || diagonal) {
+        corners.push({ x: column * size, y: row * size });
+      }
+    }
+  }
+  return corners;
+}

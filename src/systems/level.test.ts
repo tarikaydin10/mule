@@ -37,6 +37,35 @@ describe('parseLevel', () => {
   });
 });
 
+describe('parseLevel lights', () => {
+  const zone = (brightness: unknown) => ({
+    name: 'lamp',
+    x: 32,
+    y: 0,
+    width: 64,
+    height: 32,
+    properties: [{ name: 'brightness', value: brightness }],
+  });
+  const withLights = (objects: object[]): TiledMap => ({
+    ...tiledMap,
+    layers: [...tiledMap.layers, { name: 'lights', type: 'objectgroup', objects } as TiledMap['layers'][number]],
+  });
+
+  it('reads light zones with their brightness', () => {
+    expect(parseLevel(withLights([zone(0.8)])).lights).toEqual([
+      { name: 'lamp', x: 32, y: 0, width: 64, height: 32, brightness: 0.8 },
+    ]);
+  });
+
+  it('treats a map without a lights layer as completely dark', () => {
+    expect(parseLevel(tiledMap).lights).toEqual([]);
+  });
+
+  it('fails loudly when a zone has no brightness', () => {
+    expect(() => parseLevel(withLights([zone('bright')]))).toThrow('brightness');
+  });
+});
+
 describe('isSolid', () => {
   it('treats everything outside the map as solid', () => {
     const level = parseLevel(tiledMap);

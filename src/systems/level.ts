@@ -1,3 +1,5 @@
+import type { Rect } from './geometry';
+
 /**
  * Static level data parsed straight from the Tiled JSON export, without Phaser,
  * so the same code can run wherever the simulation runs.
@@ -12,6 +14,14 @@ export interface Level {
   /** Row-major, true where a tile blocks movement. */
   solid: boolean[];
   spawn: { x: number; y: number };
+  /** Lit areas; everywhere else is dark. */
+  lights: LightZone[];
+}
+
+export interface LightZone extends Rect {
+  name: string;
+  /** 0 is dark, 1 is fully lit. */
+  brightness: number;
 }
 
 interface TiledProperty {
@@ -28,7 +38,7 @@ interface TiledLayer {
   name: string;
   type: string;
   data?: number[];
-  objects?: { name: string; x: number; y: number }[];
+  objects?: { name: string; x: number; y: number; width?: number; height?: number; properties?: TiledProperty[] }[];
 }
 
 export interface TiledMap {
@@ -65,7 +75,19 @@ export function parseLevel(map: TiledMap): Level {
     tileSize: map.tilewidth,
     solid: walls.data.map((gid) => colliding.has(gid & GID_MASK)),
     spawn: { x: spawn.x, y: spawn.y },
+    lights: parseLights(map.layers.find((layer) => layer.name === 'lights' && layer.type === 'objectgroup')),
   };
+}
+
+/** Rectangles in the optional object layer "lights", each with a float property "brightness". */
+function parseLights(layer: TiledLayer | undefined): LightZone[] {
+  return (layer?.objects ?? []).map((obj) => {
+    const brightness = obj.properties?.find((p) => p.name === 'brightness')?.value;
+    if (typeof brightness !== 'number' || !obj.width || !obj.height) {
+      throw new Error(`Light "${obj.name}" needs a size and a number property "brightness"`);
+    }
+    return { name: obj.name, x: obj.x, y: obj.y, width: obj.width, height: obj.height, brightness };
+  });
 }
 
 function collidingGids(tilesets: TiledTileset[]): Set<number> {

@@ -14,5 +14,5 @@ export function levelFromRows(rows: string[], tileSize = 32): Level {
       spawn = { x: x * tileSize + tileSize / 2, y: y * tileSize + tileSize / 2 };
     }
   });
-  return { width, height, tileSize, solid: rows.join('').split('').map((c) => c === '#'), spawn };
+  return { width, height, tileSize, solid: rows.join('').split('').map((c) => c === '#'), spawn, lights: [] };
 }

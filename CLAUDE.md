@@ -71,12 +71,13 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Er ändert sich nur über `Command`s (`applyCommand`) und `step`, der die Welt um einen festen Tick (60 Hz) weiterrechnet. Gleiche Commands ergeben auf jedem Host dasselbe Ergebnis.
 - Die Szene übersetzt Input in Commands (nur bei Änderung, wie ein Netzwerk-Client), ruft `step` im festen Takt auf und zeichnet den Zustand.
 - Das Level (`src/systems/level.ts`) wird direkt aus dem Tiled-JSON gelesen, ohne Phaser.
+- Sichtbarkeit ist aus Zustand und Level abgeleitet, kein eigener Zustand: `visibilityPolygon` (`src/systems/visibility.ts`) liefert, was von einem Punkt aus zu sehen ist. Die Szene legt eine Dunkelheitsschicht über die Karte und radiert Sichtfeld, Nahbereich und die gesehenen Teile der Lichtzonen heraus.
 
 **Ordnerstruktur:**
 - `src/systems/` – reine Spiellogik ohne Phaser, mit Vitest-Tests daneben (`*.test.ts`). Ein Test bricht ab, sobald hier Phaser importiert wird.
 - `src/scenes/` – Phaser-Szenen: übersetzen Input in Commands und zeichnen den Spielzustand.
-- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides` im Layer `walls`, Spawnpunkte als Objekte im Layer `objects`.
-- `public/tilesets/` – Tileset-Bilder.
+- `public/maps/` – Tiled-Maps (JSON, Tilesets eingebettet). Kollision über die Tile-Property `collides` im Layer `walls`, Spawnpunkte als Objekte im Layer `objects`. Lichtzonen sind Rechtecke im Layer `lights` mit der float-Property `brightness` (0–1); alles außerhalb ist dunkel.
+- `public/tilesets/` – Tileset-Bilder, gezeichnet wie unter voller Beleuchtung. Die Dunkelheit legt erst die Szene darüber.
 - `deploy/` – Server-Konfiguration, Deploy-Anleitung und lokaler Nachbau des Servers.
 
 ## Assets
