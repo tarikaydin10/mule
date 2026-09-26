@@ -43,7 +43,8 @@ Bewegen und Aufheben reichen nicht für eine reife Umgebung. Vier Werkzeuge, jed
 
 | Verb | Bedingung | Wirkung | Preis |
 |---|---|---|---|
-| Takedown (`Q`) | freie Hände, Wache von hinten, außerhalb ihres Sichtkegels | Wache liegt am Boden | Partner geht in Alarm; jede Wache, die die liegende sieht, ebenso |
+| Schleichen (`Shift` halten) | – | halbes Tempo, lautlos auf normalem Boden; laute Böden (Gitterrost) verraten auch Schleichende | Zeit |
+| Takedown (`Q`) | freie Hände, Wache von hinten, außerhalb ihres Sichtkegels, angeschlichen | Wache liegt am Boden | Partner geht in Alarm; jede Wache, die die liegende sieht, ebenso |
 | Wurf (`Leertaste`) | freie Hände, 3 Bolzen pro Lauf | Geräusch 6 Kacheln in Laufrichtung, Radius 5 Kacheln | die nächste Wache geht nachsehen, Bolzen ist weg |
 | Verstecken (`E` am Versteck) | Versteck in Reichweite | für Augen unsichtbar, keine Bewegung, Verlassen dauert 0,5 s | Metall ist kein Glas: warme Beute im Versteck sehen Wärmekameras trotzdem |
 | Schalten (`E` am Schalter) | Schalter in Reichweite | Licht- oder Geräuschzone aus oder an | Klack-Geräusch am Schalter; benannte Wachen kommen nachsehen |
@@ -98,7 +99,7 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Das Level (`src/systems/level.ts`) wird direkt aus dem Tiled-JSON gelesen, ohne Phaser.
 - Beuten sind Daten in `src/systems/loot.ts` (Name und Modifikatoren). Im Zustand liegt jede Beute mit Position und `carriedBy`; die Modifikatoren eines Spielers leitet `playerModifiers` aus der getragenen Beute ab. Aufheben und Abstellen sind Commands (`pickUp`, `drop`), die Simulation prüft Reichweite und freie Hände. Getragen wird genau eine Beute.
 - Systeme koppeln über Events (`src/systems/events.ts`): `state.events` enthält, was im letzten Tick passiert ist. Reihenfolge pro Tick: Commands, Spielerbewegung mit Schrittgeräuschen, dann Wachen. Wachen lesen die Geräusche dieses Ticks und die Partner-Alarme (`guard:alerted`) des vorigen.
-- Noise (`src/systems/noise.ts`): Schritte und abgestellte Beute erzeugen `noise:emitted` mit Radius. Die Geräuschzone an der Quelle skaliert Schritte mit `surface` und jedes Geräusch mit `1 - masking`.
+- Noise (`src/systems/noise.ts`): Schritte und abgestellte Beute erzeugen `noise:emitted` mit Radius. Die Geräuschzone an der Quelle skaliert Schritte mit `surface` und jedes Geräusch mit `1 - masking`. Schleichen (`player.sneaking`, Command `sneak`) halbiert das Tempo (`SNEAK_SPEED_FACTOR`); Schleichschritte (`kind: 'sneak'`) tragen nur auf lauten Böden, um `surface − 1` (Gitterrost 1,6 → 66 px), sonst 0 und ohne Event. Wärmespuren bleiben. Jedes `noise:emitted` ist auch hörbar: `src/scenes/sounds.ts` synthetisiert es mit Web Audio (kein Asset), lauter je weiter es trägt und je näher es ist.
 - Wachen: Typen sind Daten in `src/systems/guardTypes.ts`, das Verhalten steckt in `src/systems/guards.ts`. Modi `patrol`, `investigate`, `search`, `alarm`. Sehen braucht Sichtkegel (oder Armlänge), Sichtlinie und Reichweite; im Dunkeln schrumpft sie auf `DARK_SIGHT` (30 %). Wahrgenommen × verdächtig (`suspiciousness`, derzeit immer 1) füllt `suspicion`, bei 1 gibt es Alarm. Wege plant A* auf dem Kachelraster (`src/systems/pathfinding.ts`).
 - Rundenende: `state.outcome` ist `null`, solange die Runde läuft. `extract` in der Extraktionszone beendet sie als `escaped` mit der gesicherten Beute (liegt in der Zone oder wird dort getragen) und ihrem Wert, eine Wache im Alarm in `CATCH_DISTANCE` als `caught`. Danach ändert `step` nichts mehr. Mehrere Gänge sind möglich: Beute in der Zone ablegen, weitere holen.
 - Debug-Schalter für das Gate: `createGameState(..., { onlyLoot })` spawnt nur eine Beute-Art; im Spiel die Tasten 1, 2 … (0: alle).
@@ -160,7 +161,7 @@ Gadgets brauchen freie Hände (→ Konflikt mit Server-Block ist gewollt). Gegne
 - Gadget: Wärmebild (feste Ausrüstung, keine Auswahl)
 - Systeme: Bewegung, Carry, Light, Noise, Thermal, Guard AI mit Paaren, Extraktion, Fail-State
 
-**Nicht im Umfang:** Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets, Nachtsicht, weitere Maps/Beuten, Etagen, Türen, Sprinten, Verkleidung, Wegtragen von Wachen, Koop, Social Stealth, Waffen außer Takedown.
+**Nicht im Umfang:** Ausrüstungswahl, Hinweise, Menüs, Save-System, Sound-Assets (synthetisierte Geräusche sind drin), Nachtsicht, weitere Maps/Beuten, Etagen, Türen, Sprinten, Verkleidung, Wegtragen von Wachen, Koop, Social Stealth, Waffen außer Takedown.
 
 **Reihenfolge:**
 1. Projekt-Setup, Command-Layer, Spieler bewegt sich top-down, Kollision mit Wänden, Testmap aus Tiled

@@ -72,7 +72,7 @@ const objects = [
   guard('buero_a', [[6, 11], [15, 11], [15, 14], [6, 14]], { partner: 'buero_b', chat: '1,3' }),
   guard('buero_b', [[8, 11], [15, 11], [15, 14], [8, 14]], { partner: 'buero_a', chat: '1,3' }),
   guard('lager', [[19, 6], [31, 6], [31, 14], [19, 14]], { wait: '1:4;3:4' }),
-  post('steg', [3, 24], 270, 60),
+  post('steg', [3, 24], 270, 20),
 
   camera('steg_kamera', [2, 16], 90, 260),
   camera('gassen_kamera', [20, 30], 180, 200),

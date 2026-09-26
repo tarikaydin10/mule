@@ -5,7 +5,7 @@ import { GUARDS } from './guardTypes';
 import { insideRect, type HideSpot, type Level, type SwitchSpawn } from './level';
 import { LOOT, type LootKind } from './loot';
 import { computeVelocity, STILL, type Direction, type Vector2 } from './movement';
-import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius } from './noise';
+import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, noiseRadius, SNEAK_SPEED_FACTOR } from './noise';
 import { pick } from './random';
 import { createCameras, updateCameras, type CameraState } from './sensors';
 import { addTrace, coolTraces, PLAYER_TEMPERATURE, type HeatSource, type HeatTrace } from './thermal';
@@ -50,6 +50,8 @@ export interface PlayerState {
   y: number;
   /** Direction the player wants to move in, set by `move` commands. */
   direction: Direction;
+  /** Sneaking: slower and quieter, set by `sneak` commands. */
+  sneaking: boolean;
   /** Ticks walked since the last footstep sound. */
   stepTicks: number;
   /** Whether the thermal vision gadget is on; it needs free hands. */
@@ -77,6 +79,8 @@ export interface LootState {
 /** Everything a player (or later a remote client) can ask the simulation to do. */
 export type Command =
   | { type: 'move'; playerId: string; direction: Direction }
+  /** Starts or stops sneaking. */
+  | { type: 'sneak'; playerId: string; on: boolean }
   /** Picks up the nearest loot within reach, if the player carries nothing. */
   | { type: 'pickUp'; playerId: string }
   /** Puts down what the player carries, at the player's feet. */
@@ -134,6 +138,7 @@ export function createGameState(level: Level, playerIds: string[], options: Game
       x: level.spawn.x,
       y: level.spawn.y,
       direction: STILL,
+      sneaking: false,
       stepTicks: 0,
       thermalVision: false,
       hidden: null,
@@ -309,10 +314,9 @@ export function applyCommand(state: GameState, command: Command, level: Level): 
   }
   switch (command.type) {
     case 'move':
-      return {
-        ...state,
-        players: { ...state.players, [command.playerId]: { ...player, direction: command.direction } },
-      };
+      return withPlayer(state, command.playerId, { direction: command.direction });
+    case 'sneak':
+      return withPlayer(state, command.playerId, { sneaking: command.on });
     case 'pickUp': {
       const target = carriedLoot(state, command.playerId) ? null : lootInReach(state, command.playerId);
       const loot = target ? state.loot[target] : undefined;
@@ -438,7 +442,7 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
 
   const players: Record<string, PlayerState> = {};
   for (const [id, player] of Object.entries(commanded.players)) {
-    const speed = PLAYER_SPEED * playerModifiers(commanded, id).speedMultiplier;
+    const speed = PLAYER_SPEED * playerModifiers(commanded, id).speedMultiplier * (player.sneaking ? SNEAK_SPEED_FACTOR : 1);
     // Hidden players stay put, and leaving a hide spot takes a moment.
     const emergeTicks = Math.max(0, player.emergeTicks - 1);
     const velocity = computeVelocity(player.hidden || player.emergeTicks > 0 ? STILL : player.direction, speed);
@@ -450,7 +454,10 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
     let stepTicks = moved ? player.stepTicks + 1 : player.stepTicks;
     if (stepTicks >= FOOTSTEP_INTERVAL_TICKS) {
       stepTicks = 0;
-      events.push({ type: 'noise:emitted', ...position, radius: noiseRadius(level, position, FOOTSTEP_RADIUS, 'footstep', off) });
+      const radius = noiseRadius(level, position, FOOTSTEP_RADIUS, player.sneaking ? 'sneak' : 'footstep', off);
+      if (radius > 0) {
+        events.push({ type: 'noise:emitted', ...position, radius });
+      }
       heatTraces = addTrace(heatTraces, position);
     }
     players[id] = { ...player, ...position, stepTicks, emergeTicks };

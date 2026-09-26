@@ -30,6 +30,7 @@ import { PLAYER_TEMPERATURE, temperatureTint } from '../systems/thermal';
 import { TICK_RATE } from '../systems/tick';
 import { visibilityPolygon, visionCone } from '../systems/visibility';
 import { drawPlan, planLayout, toPlan, type PlanLayout } from './plan';
+import { NoiseSounds } from './sounds';
 
 const LOCAL_PLAYER = 'p1';
 const DEFAULT_MAP = 'demo';
@@ -91,7 +92,7 @@ const EXTRACTION_COLOR = 0x5fd08a;
 const MAP_TITLES: Record<string, string> = { demo: 'Pier 9', pier9: 'Pier 9 · groß', testmap: 'Testmap' };
 const OVERLAY_DEPTH = 10;
 
-type WasdKeys = Record<'W' | 'A' | 'S' | 'D', Phaser.Input.Keyboard.Key>;
+type WasdKeys = Record<'W' | 'A' | 'S' | 'D' | 'SHIFT', Phaser.Input.Keyboard.Key>;
 
 /** What the scene is started with: the map to load plus the simulation's options. */
 export interface SceneOptions extends GameOptions {
@@ -114,6 +115,8 @@ export class GameScene extends Phaser.Scene {
   private keys!: WasdKeys;
   private pending: Command[] = [];
   private lastDirection: Direction = { x: 0, y: 0 };
+  private lastSneaking = false;
+  private sounds = new NoiseSounds();
   /** Last direction the player walked in: where a bolt goes. */
   private facing: Direction = FACING_UP;
   private accumulator = 0;
@@ -187,6 +190,7 @@ export class GameScene extends Phaser.Scene {
     // Phaser reuses the scene object on restart, so per-run fields are reset here.
     this.pending = [];
     this.lastDirection = { x: 0, y: 0 };
+    this.lastSneaking = false;
     this.facing = FACING_UP;
     this.accumulator = 0;
     this.thermalShown = false;
@@ -505,6 +509,10 @@ export class GameScene extends Phaser.Scene {
       if (event.type !== 'noise:emitted') {
         continue;
       }
+      const listener = this.state.players[LOCAL_PLAYER];
+      if (listener) {
+        this.sounds.play(event.radius, Math.hypot(event.x - listener.x, event.y - listener.y));
+      }
       this.recentNoise.push({ x: event.x, y: event.y, radius: event.radius, until: this.time.now + DEBUG_NOISE_MS });
       const ring = this.world(this.add.circle(event.x, event.y, event.radius))
         .setStrokeStyle(2, 0xffffff, 0.5)
@@ -541,7 +549,7 @@ export class GameScene extends Phaser.Scene {
     );
     this.hud(
       this.add
-        .text(WIDTH - 16, HEIGHT - 16, 'Tab Karte  ·  T Wärmebild  ·  F aussteigen  ·  R neu', { fontFamily: font, fontSize: '13px', color: '#9aa3ac' })
+        .text(WIDTH - 16, HEIGHT - 16, 'Shift schleichen  ·  Tab Karte  ·  T Wärmebild  ·  F aussteigen  ·  R neu', { fontFamily: font, fontSize: '13px', color: '#9aa3ac' })
         .setOrigin(1, 1)
         .setScrollFactor(0)
         .setShadow(0, 1, '#000000', 3),
@@ -627,8 +635,8 @@ export class GameScene extends Phaser.Scene {
     items.push(...this.planItems(planLayout(this.level, { x: 520, y: 40, width: 400, height: 360 })));
     const keys = { fontFamily: FONT, fontSize: '13px', color: '#9aa3ac' };
     items.push(
-      this.add.text(720, HEIGHT - 84, 'WASD laufen  ·  E benutzen  ·  Q Takedown  ·  Leertaste Bolzen', keys).setOrigin(0.5),
-      this.add.text(720, HEIGHT - 64, 'T Wärmebild  ·  Tab Karte  ·  F aussteigen', keys).setOrigin(0.5),
+      this.add.text(720, HEIGHT - 84, 'WASD laufen  ·  Shift schleichen  ·  E benutzen  ·  Q Takedown', keys).setOrigin(0.5),
+      this.add.text(720, HEIGHT - 64, 'Leertaste Bolzen  ·  T Wärmebild  ·  Tab Karte  ·  F aussteigen', keys).setOrigin(0.5),
       this.add.text(720, HEIGHT - 30, 'Enter: los', { fontFamily: FONT, fontSize: '17px', fontStyle: 'bold', color: '#f0a23b' }).setOrigin(0.5),
     );
     this.briefingView = this.hud(this.add.container(0, 0, items).setScrollFactor(0)).setDepth(OVERLAY_DEPTH);
@@ -939,6 +947,9 @@ export class GameScene extends Phaser.Scene {
       return '';
     }
     const parts: string[] = [];
+    if (player.sneaking && !player.hidden) {
+      parts.push('Schleicht');
+    }
     if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
       const value = securedLoot(this.state, this.level).reduce((sum, id) => {
         const loot = this.state.loot[id];
@@ -1013,7 +1024,9 @@ export class GameScene extends Phaser.Scene {
     if (!keyboard) {
       throw new Error('Keyboard input is not available');
     }
-    this.keys = keyboard.addKeys('W,A,S,D') as WasdKeys;
+    this.keys = keyboard.addKeys('W,A,S,D,SHIFT') as WasdKeys;
+    // Sound needs a user gesture first; any key will do.
+    keyboard.on('keydown', () => this.sounds.start());
     // Tab must not leave the canvas, Space must not scroll the page.
     keyboard.addCapture(['TAB', 'SPACE']);
     keyboard.on('keydown-ENTER', () => {
@@ -1072,6 +1085,11 @@ export class GameScene extends Phaser.Scene {
       if (direction.x !== 0 || direction.y !== 0) {
         this.facing = direction;
       }
+    }
+    const sneaking = this.keys.SHIFT.isDown;
+    if (sneaking !== this.lastSneaking) {
+      this.pending.push({ type: 'sneak', playerId: LOCAL_PLAYER, on: sneaking });
+      this.lastSneaking = sneaking;
     }
   }
 }

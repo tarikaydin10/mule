@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGuards, inViewCone } from './guards';
 import { LOOT } from './loot';
-import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS } from './noise';
+import { FOOTSTEP_INTERVAL_TICKS, FOOTSTEP_RADIUS, SNEAK_SPEED_FACTOR } from './noise';
 import { HEAT_TRACE_TEMPERATURE, PLAYER_TEMPERATURE } from './thermal';
 import { TICK_RATE } from './tick';
 import {
@@ -23,6 +23,7 @@ import {
   step,
   switchInReach,
   takedownTarget,
+  TAKEDOWN_REACH,
   THROW_DISTANCE,
   THROW_NOISE_RADIUS,
   TICK_SECONDS,
@@ -48,7 +49,17 @@ describe('createGameState', () => {
       seed: 0,
       fixed: false,
       players: {
-        p1: { x: 112, y: 80, direction: { x: 0, y: 0 }, stepTicks: 0, thermalVision: false, hidden: null, emergeTicks: 0, bolts: BOLTS },
+        p1: {
+          x: 112,
+          y: 80,
+          direction: { x: 0, y: 0 },
+          sneaking: false,
+          stepTicks: 0,
+          thermalVision: false,
+          hidden: null,
+          emergeTicks: 0,
+          bolts: BOLTS,
+        },
       },
       loot: {},
       guards: {},
@@ -583,5 +594,45 @@ describe('takedown', () => {
     const carrying = step({ ...withGuard(0), loot: createGameState(withBlock, ['p1']).loot }, [{ type: 'pickUp', playerId: 'p1' }], withBlock);
     expect(carriedLoot(carrying, 'p1')).toBe('block');
     expect(takedownTarget(carrying, 'p1')).toBeNull();
+  });
+});
+
+describe('sneaking', () => {
+  const sneak: Command = { type: 'sneak', playerId: 'p1', on: true };
+  const wide = levelFromRows(['#############', '#P...........#', '#############']);
+  const walk = (state: GameState, ticks: number) => {
+    let current = state;
+    const noises: number[] = [];
+    for (let i = 0; i < ticks; i++) {
+      current = step(current, [], wide);
+      noises.push(...current.events.flatMap((e) => (e.type === 'noise:emitted' ? [e.radius] : [])));
+    }
+    return { state: current, noises };
+  };
+
+  it('halves the speed and makes no sound on a plain floor, but still leaves heat', () => {
+    const walking = walk(step(createGameState(wide, ['p1']), [move(1, 0)], wide), FOOTSTEP_INTERVAL_TICKS);
+    const sneaking = walk(step(createGameState(wide, ['p1']), [move(1, 0), sneak], wide), FOOTSTEP_INTERVAL_TICKS);
+    expect(sneaking.state.players.p1!.x - 48).toBeCloseTo((walking.state.players.p1!.x - 48) * SNEAK_SPEED_FACTOR);
+    expect(walking.noises).toEqual([FOOTSTEP_RADIUS]);
+    expect(sneaking.noises).toEqual([]);
+    expect(sneaking.state.heatTraces).toHaveLength(1);
+  });
+
+  it('still gives the player away on a loud floor, by how much louder it is', () => {
+    const grating = { ...wide, noiseZones: [{ name: 'grating', x: 0, y: 0, width: 416, height: 96, surface: 1.6, masking: 0 }] };
+    let state = step(createGameState(grating, ['p1']), [move(1, 0), sneak], grating);
+    let radius = 0;
+    for (let i = 0; i < FOOTSTEP_INTERVAL_TICKS; i++) {
+      state = step(state, [], grating);
+      radius = state.events.find((e) => e.type === 'noise:emitted')?.radius ?? radius;
+    }
+    expect(radius).toBeCloseTo(FOOTSTEP_RADIUS * 0.6);
+    expect(radius).toBeGreaterThan(TAKEDOWN_REACH);
+  });
+
+  it('stops sneaking on command', () => {
+    const state = step(step(createGameState(wide, ['p1']), [sneak], wide), [{ type: 'sneak', playerId: 'p1', on: false }], wide);
+    expect(state.players.p1?.sneaking).toBe(false);
   });
 });
