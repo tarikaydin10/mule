@@ -52,6 +52,9 @@ export interface PlayerState {
   direction: Direction;
   /** Sneaking: slower and quieter, set by `sneak` commands. */
   sneaking: boolean;
+  /** Current velocity in px/s; it follows the wanted direction with some inertia. */
+  vx: number;
+  vy: number;
   /** Ticks walked since the last footstep sound. */
   stepTicks: number;
   /** Whether the thermal vision gadget is on; it needs free hands. */
@@ -104,7 +107,11 @@ export interface Modifiers {
   handsFree: boolean;
 }
 
-export const PLAYER_SPEED = 160; // px/s
+export const PLAYER_SPEED = 120; // px/s, walking; guards chase faster than this
+// Share of the gap to the wanted velocity closed per tick: starting takes about a tenth of a
+// second, stopping a little less. Gives movement weight without making it sluggish.
+export const PLAYER_ACCELERATION = 0.28;
+export const PLAYER_DECELERATION = 0.4;
 export const PLAYER_SIZE = 20; // px, below the 32 px tile size so one-tile gaps stay passable
 export const PICKUP_REACH = 36; // px, from the player's centre to the loot's
 export const CATCH_DISTANCE = 22; // px, a guard on alarm this close catches the player
@@ -139,6 +146,8 @@ export function createGameState(level: Level, playerIds: string[], options: Game
       y: level.spawn.y,
       direction: STILL,
       sneaking: false,
+      vx: 0,
+      vy: 0,
       stepTicks: 0,
       thermalVision: false,
       hidden: null,
@@ -445,11 +454,15 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
     const speed = PLAYER_SPEED * playerModifiers(commanded, id).speedMultiplier * (player.sneaking ? SNEAK_SPEED_FACTOR : 1);
     // Hidden players stay put, and leaving a hide spot takes a moment.
     const emergeTicks = Math.max(0, player.emergeTicks - 1);
-    const velocity = computeVelocity(player.hidden || player.emergeTicks > 0 ? STILL : player.direction, speed);
-    const position = moveAndCollide(level, player, PLAYER_SIZE / 2, {
-      x: velocity.x * TICK_SECONDS,
-      y: velocity.y * TICK_SECONDS,
-    });
+    const wanted = computeVelocity(player.hidden || player.emergeTicks > 0 ? STILL : player.direction, speed);
+    const inertia = wanted.x === 0 && wanted.y === 0 ? PLAYER_DECELERATION : PLAYER_ACCELERATION;
+    let vx = player.vx + (wanted.x - player.vx) * inertia;
+    let vy = player.vy + (wanted.y - player.vy) * inertia;
+    if (Math.hypot(vx, vy) < 1) {
+      vx = 0;
+      vy = 0;
+    }
+    const position = moveAndCollide(level, player, PLAYER_SIZE / 2, { x: vx * TICK_SECONDS, y: vy * TICK_SECONDS });
     const moved = position.x !== player.x || position.y !== player.y;
     let stepTicks = moved ? player.stepTicks + 1 : player.stepTicks;
     if (stepTicks >= FOOTSTEP_INTERVAL_TICKS) {
@@ -460,7 +473,7 @@ export function step(state: GameState, commands: readonly Command[], level: Leve
       }
       heatTraces = addTrace(heatTraces, position);
     }
-    players[id] = { ...player, ...position, stepTicks, emergeTicks };
+    players[id] = { ...player, ...position, vx, vy, stepTicks, emergeTicks };
   }
 
   const loot = thaw(followCarriers(commanded.loot, players), events);

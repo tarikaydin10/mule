@@ -23,8 +23,8 @@ export const GUARDS = {
   dockGuard: {
     name: 'Dock-Wache',
     patrolSpeed: 70,
-    investigateSpeed: 95,
-    chaseSpeed: 130,
+    investigateSpeed: 100,
+    chaseSpeed: 135, // faster than a walking player: a chase is only escaped by breaking the line of sight
     sightRange: 300,
     fieldOfView: (100 * Math.PI) / 180,
     hearing: 1,

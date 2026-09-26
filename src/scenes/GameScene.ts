@@ -36,6 +36,10 @@ const LOCAL_PLAYER = 'p1';
 const DEFAULT_MAP = 'demo';
 const WIDTH = 960;
 const HEIGHT = 540;
+// The world camera zooms in so the figure has size; the fixed HUD keeps its own scale.
+const ZOOM = 1.5;
+const CAMERA_LERP = 0.1;
+const LOOK_AHEAD = 36; // px, the camera leads the player a little in the walking direction
 // After a long stall (tab in background) the simulation catches up at most this far.
 // Slow frames below that are caught up in full, so the game never runs in slow motion.
 const MAX_CATCH_UP_SECONDS = 0.25;
@@ -76,13 +80,19 @@ const GUARD_LOOK: Record<GuardMode, { body: number; cone: number }> = {
 };
 const THERMAL_CAMERA_COLOR = 0x7fc8e6;
 const HIDE_SPOT_COLOR = 0x8fb37a;
+const SHADOW_COLOR = 0x000000;
+const PLAYER_COLOR = 0xf2f2f2;
+const SNEAK_PROMPT_RANGE = 280; // px, a guard this close and in view prompts sneaking
 const SWITCH_COLOR = 0xf0d060;
 const SWITCH_OFF_COLOR = 0x6a6a6a;
 const FACING_UP: Direction = { x: 0, y: -1 };
 const NOISE_RING_MS = 450;
 const MESSAGE_MS = 3500;
 const DEBUG_NOISE_MS = 1000;
-const DEBUG_FONT = { fontFamily: 'Menlo, Consolas, monospace', fontSize: '11px', color: '#ffffff', backgroundColor: '#000000a0' };
+const DEBUG_FONT = { fontFamily: 'Menlo, Consolas, monospace', fontSize: '9px', color: '#ffffff', backgroundColor: '#000000a0' };
+// World-space text is drawn through the zoomed camera, so it is set smaller.
+const LABEL_SIZE = '10px';
+const SIGN_SIZE = '9px';
 
 // Affordance: the world names itself and the objectives are always marked (docs/demo.md).
 const FONT = 'Arial, sans-serif';
@@ -125,9 +135,12 @@ export class GameScene extends Phaser.Scene {
   private thermalFilter!: ThermalFilter;
   private thermalShown = false;
   private tileLayers: Phaser.Tilemaps.TilemapLayer[] = [];
-  private playerView!: Phaser.GameObjects.Rectangle;
+  private labelCamera!: Phaser.Cameras.Scene2D.Camera;
+  private playerView!: Figure;
   private lootViews = new Map<string, Phaser.GameObjects.Rectangle>();
-  private guardViews = new Map<string, Phaser.GameObjects.Arc>();
+  private guardViews = new Map<string, Figure>();
+  private lastModes = new Map<string, GuardMode>();
+  private followOffset = { x: 0, y: 0 };
   private switchViews = new Map<string, Phaser.GameObjects.Rectangle>();
   private overlay!: Phaser.GameObjects.Graphics;
   private traces!: Phaser.GameObjects.Graphics;
@@ -196,6 +209,8 @@ export class GameScene extends Phaser.Scene {
     this.thermalShown = false;
     this.lootViews = new Map();
     this.guardViews = new Map();
+    this.lastModes = new Map();
+    this.followOffset = { x: 0, y: 0 };
     this.switchViews = new Map();
     this.litFrom = null;
     this.message = null;
@@ -210,6 +225,9 @@ export class GameScene extends Phaser.Scene {
     this.lastCarried = null;
     this.lastHidden = null;
 
+    // Three cameras: the world (zoomed, with the thermal filter), world-space text (zoomed,
+    // no filter) and the fixed HUD (not zoomed).
+    this.labelCamera = this.cameras.add(0, 0, WIDTH, HEIGHT);
     this.hudCamera = this.cameras.add(0, 0, WIDTH, HEIGHT);
     this.createWorld();
     this.createHud();
@@ -253,10 +271,15 @@ export class GameScene extends Phaser.Scene {
     this.thermalFilter.time = this.time.now / 1000;
 
     // Hidden: only a faint outline shows where the player is.
-    this.playerView
-      .setPosition(player.x, player.y)
-      .setFillStyle(thermal ? temperatureTint(PLAYER_TEMPERATURE) : 0xf2f2f2)
-      .setAlpha(player.hidden ? 0.35 : 1);
+    this.playerView.update(
+      player,
+      Math.atan2(this.facing.y, this.facing.x),
+      Math.hypot(player.vx, player.vy) > 1,
+      thermal ? temperatureTint(PLAYER_TEMPERATURE) : PLAYER_COLOR,
+      this.time.now,
+    );
+    this.playerView.root.setAlpha(player.hidden ? 0.35 : 1);
+    this.followPlayer(player);
     this.drawSwitches();
     this.drawLoot(thermal);
     this.drawGuards(thermal);
@@ -294,9 +317,8 @@ export class GameScene extends Phaser.Scene {
     if (!player) {
       throw new Error('Local player is missing from the game state');
     }
-    this.playerView = this.world(this.add.rectangle(player.x, player.y, PLAYER_SIZE, PLAYER_SIZE, 0xf2f2f2)).setDepth(
-      DEPTH.player,
-    );
+    this.playerView = new Figure(this, PLAYER_SIZE / 2, PLAYER_COLOR);
+    this.world(this.playerView.root).setDepth(DEPTH.player);
     for (const [id, loot] of Object.entries(this.state.loot)) {
       const look = LOOT_LOOK[loot.kind];
       this.lootViews.set(
@@ -305,10 +327,10 @@ export class GameScene extends Phaser.Scene {
       );
     }
     for (const [id, guard] of Object.entries(this.state.guards)) {
-      this.guardViews.set(
-        id,
-        this.world(this.add.circle(guard.x, guard.y, GUARD_SIZE / 2, GUARD_LOOK.patrol.body)).setDepth(DEPTH.player),
-      );
+      const figure = new Figure(this, GUARD_SIZE / 2, GUARD_LOOK.patrol.body);
+      this.world(figure.root).setDepth(DEPTH.player);
+      this.guardViews.set(id, figure);
+      this.lastModes.set(id, guard.mode);
     }
     for (const camera of this.level.thermalCameras) {
       this.world(this.add.rectangle(camera.x, camera.y, 10, 10, 0x39424c).setStrokeStyle(1, THERMAL_CAMERA_COLOR)).setDepth(
@@ -339,7 +361,7 @@ export class GameScene extends Phaser.Scene {
     for (const sign of this.level.signs) {
       this.world(
         this.add
-          .text(sign.x, sign.y, sign.text, { fontFamily: 'Arial, sans-serif', fontSize: '12px', color: '#d8dcc8' })
+          .text(sign.x, sign.y, sign.text, { fontFamily: FONT, fontSize: SIGN_SIZE, color: '#d8dcc8' })
           .setOrigin(0.5)
           .setAlpha(0.85),
       ).setDepth(DEPTH.loot);
@@ -354,24 +376,53 @@ export class GameScene extends Phaser.Scene {
     // Not on the display list: only used to cut shapes out of the darkness.
     this.eraser = this.make.graphics({}, false);
 
-    // Both cameras follow the player the same way, so the HUD camera can also draw world-space
-    // debug shapes; fixed HUD text uses scroll factor 0.
-    for (const camera of [this.cameras.main, this.hudCamera]) {
+    // The world and the label camera follow the player the same way, softly, with a little
+    // look-ahead; the HUD camera stays put and is not zoomed.
+    for (const camera of [this.cameras.main, this.labelCamera]) {
       camera.setBounds(0, 0, map.widthInPixels, map.heightInPixels);
-      camera.startFollow(this.playerView, true);
+      camera.setZoom(ZOOM);
+      camera.startFollow(this.playerView.root, true, CAMERA_LERP, CAMERA_LERP);
     }
   }
 
-  /** Marks an object as part of the world: the HUD camera does not draw it. */
+  /** Marks an object as part of the world: only the world camera draws it. */
   private world<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    this.labelCamera.ignore(object);
     this.hudCamera.ignore(object);
     return object;
   }
 
-  /** Marks an object as HUD: the world camera, and with it the thermal filter, does not draw it. */
+  /** Marks world-space text: drawn zoomed like the world, but without the thermal filter. */
+  private label<T extends Phaser.GameObjects.GameObject>(object: T): T {
+    this.cameras.main.ignore(object);
+    this.hudCamera.ignore(object);
+    return object;
+  }
+
+  /** Marks a fixed HUD object: screen coordinates, not zoomed, no filter. */
   private hud<T extends Phaser.GameObjects.GameObject>(object: T): T {
     this.cameras.main.ignore(object);
+    this.labelCamera.ignore(object);
     return object;
+  }
+
+  /** Screen position of a world point, as the world camera shows it. */
+  private toScreen(point: Vector2): Vector2 {
+    const view = this.cameras.main.worldView;
+    return { x: (point.x - view.x) * ZOOM, y: (point.y - view.y) * ZOOM };
+  }
+
+  /** The camera leads a little in the walking direction, and closes in while the player hides. */
+  private followPlayer(player: PlayerState): void {
+    const moving = Math.hypot(player.vx, player.vy) > 1;
+    const wanted = moving ? { x: this.facing.x * LOOK_AHEAD, y: this.facing.y * LOOK_AHEAD } : { x: 0, y: 0 };
+    this.followOffset.x += (wanted.x - this.followOffset.x) * 0.05;
+    this.followOffset.y += (wanted.y - this.followOffset.y) * 0.05;
+    const zoom = player.hidden ? ZOOM * 1.12 : ZOOM;
+    for (const camera of [this.cameras.main, this.labelCamera]) {
+      camera.setFollowOffset(-this.followOffset.x, -this.followOffset.y);
+      camera.setZoom(camera.zoom + (zoom - camera.zoom) * 0.08);
+    }
   }
 
   private setThermalView(on: boolean): void {
@@ -415,10 +466,10 @@ export class GameScene extends Phaser.Scene {
     for (const [id, guard] of Object.entries(this.state.guards)) {
       const look = GUARD_LOOK[guard.mode];
       const definition = GUARDS[guard.kind];
-      this.guardViews
-        .get(id)
-        ?.setPosition(guard.x, guard.y)
-        .setFillStyle(thermal ? temperatureTint(definition.temperature) : look.body);
+      const moving = guard.path.length > 0 && guard.mode !== 'down';
+      this.guardViews.get(id)?.update(guard, guard.facing, moving, thermal ? temperatureTint(definition.temperature) : look.body, this.time.now);
+      this.guardViews.get(id)?.root.setAlpha(guard.mode === 'down' ? 0.7 : 1);
+      this.noticeGuard(id, guard);
       if (thermal) {
         // Thermal vision shows heat, not where anyone is looking.
         continue;
@@ -443,6 +494,32 @@ export class GameScene extends Phaser.Scene {
         const cone = visionCone(this.level, camera, camera.facing, camera.fieldOfView, camera.range, 'heat');
         fillPolygon(overlay, cone, THERMAL_CAMERA_COLOR, BEAM_ALPHA.far);
       }
+    }
+  }
+
+  /** A guard that starts to wonder shows "?", one that raises the alarm "!", and the screen jolts. */
+  private noticeGuard(id: string, guard: GuardState): void {
+    const before = this.lastModes.get(id);
+    this.lastModes.set(id, guard.mode);
+    if (before === guard.mode || guard.mode === 'patrol' || guard.mode === 'down') {
+      return;
+    }
+    const alarm = guard.mode === 'alarm';
+    if (!alarm && (before === 'investigate' || before === 'search')) {
+      return;
+    }
+    const mark = this.label(
+      this.add
+        .text(guard.x, guard.y - 22, alarm ? '!' : '?', { fontFamily: FONT, fontSize: '18px', fontStyle: 'bold', color: alarm ? '#ff5a4a' : '#f0c070' })
+        .setOrigin(0.5, 1)
+        .setShadow(0, 1, '#000000', 3)
+        .setScale(0.2),
+    );
+    this.tweens.add({ targets: mark, scale: 1, y: guard.y - 30, duration: 180, ease: 'Back.easeOut' });
+    this.tweens.add({ targets: mark, alpha: 0, delay: 900, duration: 400, onComplete: () => mark.destroy() });
+    if (alarm) {
+      this.cameras.main.shake(220, 0.004);
+      this.labelCamera.shake(220, 0.004);
     }
   }
 
@@ -484,9 +561,17 @@ export class GameScene extends Phaser.Scene {
     erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS, WALL_REVEAL), NEAR_ERASE);
     erase(eraser, visibilityPolygon(this.level, eye, NEAR_RADIUS * 0.6, WALL_REVEAL), NEAR_ERASE);
     for (const zone of this.level.lights) {
-      if (!off.includes(zone.name)) {
-        erase(eraser, clipPolygonToRect(sight, zone), zone.brightness);
+      if (off.includes(zone.name)) {
+        continue;
       }
+      // A soft edge: the rim lifts part of the darkness, the middle a little more.
+      const feather = 14;
+      erase(eraser, clipPolygonToRect(sight, zone), zone.brightness * 0.7);
+      erase(
+        eraser,
+        clipPolygonToRect(sight, { x: zone.x + feather, y: zone.y + feather, width: zone.width - 2 * feather, height: zone.height - 2 * feather }),
+        zone.brightness * 0.45,
+      );
     }
     this.darkness.clear().fill(0x000000, DARKNESS_OUT_OF_SIGHT).erase(eraser).render();
   }
@@ -555,7 +640,7 @@ export class GameScene extends Phaser.Scene {
         .setShadow(0, 1, '#000000', 3),
     );
     this.markers = this.hud(this.add.graphics()).setScrollFactor(0);
-    this.debugGraphics = this.hud(this.add.graphics());
+    this.debugGraphics = this.label(this.add.graphics());
     this.debugInfo = this.hud(this.add.text(8, 8, '', DEBUG_FONT).setScrollFactor(0));
   }
 
@@ -572,6 +657,11 @@ export class GameScene extends Phaser.Scene {
     const kind = carried ? this.state.loot[carried]?.kind : undefined;
     if (carried && carried !== this.lastCarried && kind) {
       this.say(`${LOOT[kind].name}: ${lootRule(kind)}.`);
+      const view = this.lootViews.get(carried);
+      if (view) {
+        view.setScale(1.6);
+        this.tweens.add({ targets: view, scale: 1, duration: 220, ease: 'Back.easeOut' });
+      }
     }
     this.lastCarried = carried;
     if (player.hidden && player.hidden !== this.lastHidden) {
@@ -656,6 +746,9 @@ export class GameScene extends Phaser.Scene {
     this.briefingView = null;
     this.phase = 'running';
     this.accumulator = 0;
+    for (const camera of [this.cameras.main, this.labelCamera, this.hudCamera]) {
+      camera.fadeIn(700, 0, 0, 0);
+    }
   }
 
   /** The map on Tab: the same plan as in the briefing, with the player where they are now. */
@@ -745,7 +838,7 @@ export class GameScene extends Phaser.Scene {
     for (const [key, want] of wanted) {
       const view =
         this.labels.get(key) ??
-        this.hud(this.add.text(0, 0, '', { fontFamily: FONT, fontSize: '13px', color: '#ffffff' }).setOrigin(0.5, 1).setShadow(0, 1, '#000000', 3));
+        this.label(this.add.text(0, 0, '', { fontFamily: FONT, fontSize: LABEL_SIZE, color: '#ffffff' }).setOrigin(0.5, 1).setShadow(0, 1, '#000000', 3));
       this.labels.set(key, view);
       view.setPosition(Math.round(want.x), Math.round(want.y)).setText(want.text).setColor(want.color).setVisible(true);
     }
@@ -757,7 +850,6 @@ export class GameScene extends Phaser.Scene {
    */
   private drawMarkers(player: PlayerState): void {
     const g = this.markers.clear();
-    const camera = this.cameras.main;
     const zone = this.level.extraction;
     const targets: { key: string; x: number; y: number; text: string; color: number }[] = [];
     for (const [id, loot] of Object.entries(this.state.loot)) {
@@ -771,8 +863,7 @@ export class GameScene extends Phaser.Scene {
     }
     const used = new Set<string>();
     for (const target of targets) {
-      const sx = target.x - camera.scrollX;
-      const sy = target.y - camera.scrollY;
+      const { x: sx, y: sy } = this.toScreen(target);
       const onScreen = sx >= MARKER_MARGIN && sx <= WIDTH - MARKER_MARGIN && sy >= MARKER_MARGIN && sy <= HEIGHT - MARKER_MARGIN;
       if (!onScreen && target.key !== 'extraction' && !this.isTarget(target.key)) {
         continue;
@@ -825,7 +916,7 @@ export class GameScene extends Phaser.Scene {
     const label = (key: string, x: number, y: number, text: string) => {
       used.add(key);
       const existing = this.debugLabels.get(key);
-      const view = existing ?? this.hud(this.add.text(0, 0, '', DEBUG_FONT).setOrigin(0.5, 1));
+      const view = existing ?? this.label(this.add.text(0, 0, '', DEBUG_FONT).setOrigin(0.5, 1));
       this.debugLabels.set(key, view);
       view.setPosition(Math.round(x), Math.round(y)).setText(text).setVisible(true);
     };
@@ -941,6 +1032,13 @@ export class GameScene extends Phaser.Scene {
     return carried ? { command: { type: 'drop', playerId: LOCAL_PLAYER }, text: 'E: abstellen' } : null;
   }
 
+  /** Whether a standing guard is within `range` and inside what the player sees. */
+  private guardInView(player: PlayerState, range: number): boolean {
+    return Object.values(this.state.guards).some(
+      (guard) => guard.mode !== 'down' && Math.hypot(guard.x - player.x, guard.y - player.y) <= range && pointInPolygon(guard, this.sight),
+    );
+  }
+
   private hintText(): string {
     const player = this.state.players[LOCAL_PLAYER];
     if (!player || this.state.outcome) {
@@ -949,6 +1047,8 @@ export class GameScene extends Phaser.Scene {
     const parts: string[] = [];
     if (player.sneaking && !player.hidden) {
       parts.push('Schleicht');
+    } else if (!player.hidden && this.guardInView(player, SNEAK_PROMPT_RANGE)) {
+      parts.push('Shift halten: schleichen');
     }
     if (inExtraction(this.state, this.level, LOCAL_PLAYER)) {
       const value = securedLoot(this.state, this.level).reduce((sum, id) => {
@@ -1015,6 +1115,8 @@ export class GameScene extends Phaser.Scene {
         this.add.text(0, 120, again, { fontFamily: font, fontSize: '16px', color: '#9aa3ac' }).setOrigin(0.5, 0),
       ]).setScrollFactor(0),
     );
+    this.endScreen.setAlpha(0);
+    this.tweens.add({ targets: this.endScreen, alpha: 1, duration: 500 });
   }
 
   // Input
@@ -1091,6 +1193,34 @@ export class GameScene extends Phaser.Scene {
       this.pending.push({ type: 'sneak', playerId: LOCAL_PLAYER, on: sneaking });
       this.lastSneaking = sneaking;
     }
+  }
+}
+
+/**
+ * A figure seen from above: a shadow, a body, and a head set towards the facing, so the
+ * direction reads at a glance. Walking bobs the body a little.
+ */
+class Figure {
+  readonly root: Phaser.GameObjects.Container;
+  private readonly body: Phaser.GameObjects.Arc;
+  private readonly head: Phaser.GameObjects.Arc;
+
+  constructor(scene: Phaser.Scene, radius: number, color: number) {
+    const shadow = scene.add.ellipse(2, 3, radius * 2.4, radius * 1.8, SHADOW_COLOR, 0.35);
+    this.body = scene.add.circle(0, 0, radius, color);
+    this.head = scene.add.circle(0, 0, radius * 0.5, color).setStrokeStyle(1, 0x000000, 0.5);
+    this.root = scene.add.container(0, 0, [shadow, this.body, this.head]);
+  }
+
+  update(at: Vector2, facing: number, moving: boolean, color: number, now: number): void {
+    this.root.setPosition(at.x, at.y);
+    this.body.setFillStyle(color);
+    this.head.setFillStyle(color);
+    const reach = this.body.radius * 0.7;
+    this.head.setPosition(Math.cos(facing) * reach, Math.sin(facing) * reach);
+    // A walking bob: the body sways across the walking direction.
+    const sway = moving ? Math.sin(now / 55) * 0.08 : 0;
+    this.body.setScale(1 + sway, 1 - sway);
   }
 }
 

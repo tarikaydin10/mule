@@ -13,6 +13,7 @@ import {
   inExtraction,
   lootInReach,
   PICKUP_REACH,
+  PLAYER_ACCELERATION,
   PLAYER_SIZE,
   PLAYER_SPEED,
   heatSources,
@@ -41,6 +42,17 @@ const level = levelFromRows([
 ]);
 const move = (x: -1 | 0 | 1, y: -1 | 0 | 1): Command => ({ type: 'move', playerId: 'p1', direction: { x, y } });
 
+/** Distance covered in `ticks` from standstill towards `speed`, with the player's inertia. */
+function travelled(ticks: number, speed: number): number {
+  let velocity = 0;
+  let distance = 0;
+  for (let i = 0; i < ticks; i++) {
+    velocity += (speed - velocity) * PLAYER_ACCELERATION;
+    distance += velocity * TICK_SECONDS;
+  }
+  return distance;
+}
+
 describe('createGameState', () => {
   it('places every player at the spawn, standing still', () => {
     const state = createGameState(level, ['p1']);
@@ -54,6 +66,8 @@ describe('createGameState', () => {
           y: 80,
           direction: { x: 0, y: 0 },
           sneaking: false,
+          vx: 0,
+          vy: 0,
           stepTicks: 0,
           thermalVision: false,
           hidden: null,
@@ -96,19 +110,31 @@ describe('applyCommand', () => {
 });
 
 describe('step', () => {
-  it('advances the tick and moves by speed times the fixed tick length', () => {
+  it('advances the tick and starts moving with inertia towards the walking speed', () => {
     const next = step(createGameState(level, ['p1']), [move(1, 0)], level);
     expect(next.tick).toBe(1);
-    expect(next.players.p1?.x).toBeCloseTo(112 + PLAYER_SPEED * TICK_SECONDS);
+    expect(next.players.p1?.x).toBeCloseTo(112 + travelled(1, PLAYER_SPEED));
     expect(next.players.p1?.y).toBe(80);
+    let state = next;
+    for (let i = 0; i < 30; i++) {
+      state = step(state, [], level);
+    }
+    expect(state.players.p1?.vx).toBeCloseTo(PLAYER_SPEED, 1);
   });
 
-  it('keeps moving in the last commanded direction until a new command arrives', () => {
+  it('keeps moving in the last commanded direction until a new command arrives, then rolls out', () => {
     let state = step(createGameState(level, ['p1']), [move(0, 1)], level);
     state = step(state, [], level);
-    expect(state.players.p1?.y).toBeCloseTo(80 + 2 * PLAYER_SPEED * TICK_SECONDS);
-    state = step(state, [move(0, 0)], level);
-    expect(state.players.p1?.y).toBeCloseTo(80 + 2 * PLAYER_SPEED * TICK_SECONDS);
+    expect(state.players.p1?.y).toBeCloseTo(80 + travelled(2, PLAYER_SPEED));
+    const stopped = step(state, [move(0, 0)], level);
+    // Rolling out: still moving, but slower than before.
+    expect(stopped.players.p1!.y).toBeGreaterThan(state.players.p1!.y);
+    expect(stopped.players.p1!.vy).toBeLessThan(state.players.p1!.vy);
+    let rest = stopped;
+    for (let i = 0; i < 30; i++) {
+      rest = step(rest, [], level);
+    }
+    expect(rest.players.p1?.vy).toBe(0);
   });
 
   it('stops the player at walls', () => {
@@ -159,7 +185,7 @@ describe('carrying loot', () => {
 
   it('slows the carrier down by the loot speed multiplier', () => {
     const state = run(start(), [[pickUp, move(0, 1)]]);
-    expect(state.players.p1?.y).toBeCloseTo(80 + PLAYER_SPEED * LOOT.serverBlock.speedMultiplier * TICK_SECONDS);
+    expect(state.players.p1?.y).toBeCloseTo(80 + travelled(1, PLAYER_SPEED * LOOT.serverBlock.speedMultiplier));
   });
 
   it('moves carried loot along with the carrier', () => {
